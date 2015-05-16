@@ -46,7 +46,7 @@ static void ctx_append(struct namugen_ctx *ctx, char *s) {
 }
 
 struct namuast_inline {
-    char s[1025];
+    char s[4097];
     size_t len;
 };
 
@@ -73,7 +73,7 @@ static char* span_type_to_str(enum nm_span_type type) {
 
 static void append(struct namuast_inline *inl, char *s) {
     size_t len = strlen(s);
-    if (inl->len + len + 1 < 1024) {
+    if (inl->len + len + 1 < 4096) {
         memcpy(inl->s + inl->len, s, len);
         inl->len += len;
         inl->s[inl->len] = 0;
@@ -81,7 +81,7 @@ static void append(struct namuast_inline *inl, char *s) {
 }
 
 static inline void push(struct namuast_inline* inl, char c) {
-    if (inl->len < 1024) {
+    if (inl->len < 4096) {
         inl->s[inl->len++] = c;
         inl->s[inl->len] = 0;
     }
