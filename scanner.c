@@ -1003,8 +1003,8 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
             break;
         case '[':
             {
-                // parse as footnote
                 if (EQ(p + 1, border, '*')) {
+                    // parse as footnote
                     if (nm_in_footnote(ctx)) {
                         goto scan_literally;
                     }
@@ -1035,64 +1035,63 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                     int id = nm_register_footnote(ctx, footnote, extra);
                     nm_inl_emit_footnote_mark(inl, id, ctx);
                     p = fnt_end_p;
-                    goto exit;
-                }
-
-                // parse as link
-                char *testp = p;
-                bool compatible_mode;
-                testp++;
-                if (EQ(testp, border, '[')) {
-                    compatible_mode = false;
-                    testp++;
                 } else {
-                    compatible_mode = true;
-                }
-                char *link_st, *link_ed;
-                char *pipe_pos = NULL;
+                    // parse as link
+                    char *testp = p;
+                    bool compatible_mode;
+                    testp++;
+                    if (EQ(testp, border, '[')) {
+                        compatible_mode = false;
+                        testp++;
+                    } else {
+                        compatible_mode = true;
+                    }
+                    char *link_st, *link_ed;
+                    char *pipe_pos = NULL;
 
-                CONSUME_SPACETAB(testp, border);
-                link_st = testp;
-                while (1) {
-                    UNTIL_REACHING2(testp, border, ']', '\n') {
-                        bool escape_next_char = false; 
-                        switch (*testp) {
-                        case '|':
-                            pipe_pos = testp;
-                            break;
-                        case '\\':
-                            if (!MET_EOF(testp + 1, border)) {
-                                switch (*(testp + 1)) {
-                                case '\\':
-                                case '[':
-                                case '|':
-                                case ']':
-                                    escape_next_char = true;
-                                    break;
+                    CONSUME_SPACETAB(testp, border);
+                    link_st = testp;
+                    while (1) {
+                        UNTIL_REACHING2(testp, border, ']', '\n') {
+                            bool escape_next_char = false; 
+                            switch (*testp) {
+                            case '|':
+                                pipe_pos = testp;
+                                break;
+                            case '\\':
+                                if (!MET_EOF(testp + 1, border)) {
+                                    switch (*(testp + 1)) {
+                                    case '\\':
+                                    case '[':
+                                    case '|':
+                                    case ']':
+                                        escape_next_char = true;
+                                        break;
+                                    }
                                 }
                             }
+                            if (escape_next_char)
+                                testp += 2;
+                            else
+                                testp++;
                         }
-                        if (escape_next_char)
-                            testp += 2;
-                        else
+                        if (MET_EOF(testp, border) || *testp == '\n') {
+                            goto scan_literally;
+                        } else if (compatible_mode) {
+                            link_ed = testp;
                             testp++;
+                            break;
+                        } else if (EQ(testp + 1, border, ']')) {
+                            link_ed = testp;
+                            testp += 2;
+                            break;
+                        }
                     }
-                    if (MET_EOF(testp, border) || *testp == '\n') {
-                        goto scan_literally;
-                    } else if (compatible_mode) {
-                        link_ed = testp;
-                        testp++;
-                        break;
-                    } else if (EQ(testp + 1, border, ']')) {
-                        link_ed = testp;
-                        testp += 2;
-                        break;
-                    }
+                    // get rid of spaces on the right side of link
+                    RCONSUME_SPACETAB(link_st, link_ed);
+                    namu_scan_link_content(link_st, link_ed, pipe_pos, ctx, inl);
+                    p = testp;
                 }
-                // get rid of spaces on the right side of link
-                RCONSUME_SPACETAB(link_st, link_ed);
-                namu_scan_link_content(link_st, link_ed, pipe_pos, ctx, inl);
-                p = testp;
             }
             break;
         default:
