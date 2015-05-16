@@ -163,8 +163,10 @@ void nm_emit_return(struct namugen_ctx* ctx) {
     ctx_append(ctx, "\n");
 }
 
-void nm_emit_hr(struct namugen_ctx* ctx) {
-    ctx_append(ctx, "----------\n");
+void nm_emit_hr(struct namugen_ctx* ctx, int hr_num) {
+    char str[100];
+    sprintf(str, "--HR%d--", hr_num);
+    ctx_append(ctx, str);
 }
 
 

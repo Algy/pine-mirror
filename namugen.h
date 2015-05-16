@@ -115,7 +115,7 @@ extern struct nm_block_emitters block_emitter_ops_paragraphic;
 void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* inl_ast);
 void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inline* inl);
 void nm_emit_return(struct namugen_ctx* ctx);
-void nm_emit_hr(struct namugen_ctx* ctx);
+void nm_emit_hr(struct namugen_ctx* ctx, int hr_num);
 void nm_begin_footnote(struct namugen_ctx* ctx);
 void nm_end_footnote(struct namugen_ctx* ctx);
 bool nm_in_footnote(struct namugen_ctx* ctx);

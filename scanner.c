@@ -1210,8 +1210,8 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
                 testp++;
                 num++;
             }
-            if (num >= 3 && num <= 10) {
-                nm_emit_hr(ctx);
+            if (num >= 4 && num <= 10) {
+                nm_emit_hr(ctx, num);
                 return testp;
             }
         }
