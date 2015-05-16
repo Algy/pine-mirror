@@ -1,0 +1,133 @@
+= 깨진 헤딩 
+== 이봐 징징이! ==
+{{{+2 동전 좀 주워주게}}}.
+{{{+3 하지마라}}}
+{{{+10 너무 숫자가 큼}}}
+
+인라인 {{{ raw string 입니다    }}}
+거기 떨어져 있는 [[동전]] 좀 주워주게. [[http://www.naver.com | 네이바]]
+    [* 코멘트 안의 코멘트 [[예제]]. [* 중첩이 안된다.]]
+
+[[../]] [* 이것은 이름 없는 코멘트이다.] [*A 이름 있는 코멘트이다.]
+[* 코멘트 내의 '''볼드''' 와 ~~개드립~~도 쓸 수 있다. ]
+{{{
+    JSON format
+    {
+        a: "ss"
+    }
+}}}
+
+-- 취소선과 ''' 볼드 ''' '' 기울임체 '' --
+-- 연결 안된 취소선 
+,, 아랫첨자 ,, ^^ 윗첨자  ^^
+
+>>>>>> in the long run we are all dead.... -- 1 << n
+
+다음은 링크테스트입니다. 
+[wiki:"항목" 별명]
+[[wiki:"항목" 별명]]
+[wiki:"항목#s-2.3.5" 별명]
+[[wiki:"항목#s-2" 별명]]
+[[wiki:"항목#s-2.3" 별명| 별명2]]
+
+[[../#s-2]]
+[[/하위항목#s-5.1]]
+
+[[항목|별명]]
+[[항목#s-1|별명]]
+[[항목#s-1.2|별명]]
+
+[[http://www.naver.com]]
+[http://www.naver.com #]
+[[http://www.naver.com #]]
+[[http://www.naver.com | #]]
+[[  http://www.naver.com | #]]
+[[www.wrong.example #]]
+[[www.wrong.example|#]]
+
+
+이미지 테스트입니다.
+
+
+항목 
+---
+-----
+----------
+----------- 
+(위의 것은 hr로 나타나지 않아야 합니다)
+
+http://example.com/photo.jpg
+http://example.com/photo.jpeg
+http://example.com/photo2.png
+https://example.com/photo2.gif
+https://example.com/photo3?.jpg
+
+이미지 https://example.com/photo2.gif?width=300px&height=200px&align=center
+https://example.com/photo2.gif?height=200px&align=center&width=300px
+https://example.com/photo2.gif? height=200px & height=500px
+
+https://example.com/photo3?.jpg? align=left & width=300px  이상!
+
+
+리스트 테스트입니다.
+* To be shown
+ j. To be shown as indent
+ 2. To be shown as indent
+
+
+ * SectionA1
+  * Sectiona1
+  * Sectiona2
+      * Section1
+    * Sectioni2
+ * SectionA2
+
+
+
+    * Dangled item
+  * Item1
+  * Item2
+      * SubItem1
+      * SubItem2
+      * SubItem3
+
+ 1. Ordered List Item 1
+     a. Alphabetic
+     a. Alphabetic
+ 1. Ordered List Item 2
+     A. Upper
+     A. Upper
+     A. Upper
+ 1. Ordered List Item 3
+     i. roman
+     i. roman
+     i. roman
+ 1. Ordered List Item 4
+     I. ROMAN
+     I. ROMAN
+     I. ROMAN
+     I. ROMAN
+들여쓰지 않은 텍스트
+ 들여쓴 텍스트 (단계 1)
+   들여쓴 텍스트 (단계 2)
+      들여쓴 텍스트 (단계 3)
+      * 그 뒤의 리스트1
+      * 그 뒤의 리스트2
+   들여쓴 텍스트 (단계 2)
+ 들여쓴 텍스트 (단계 1)
+들여쓰지 않은 텍스트
+
+ *. 옆에 점이 안보이면 에러
+
+ * 들여쓰기 혼합.
+   Indent
+ * 혼합 2
+   Indent1
+     Indent2
+   Indent1'
+|| ss || sws ||
+|| tt || tt ||
+
+|Caption
+| a11 || a12 || a13 ||
+|||| a21~2 || a23 ||

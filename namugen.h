@@ -1,7 +1,8 @@
 #ifndef _NAMUGEN_H
 #define _NAMUGEN_H
+#include <stdbool.h>
 
-enum namu_span_type {
+enum nm_span_type {
     nm_span_none,
     nm_span_bold,
     nm_span_italic,
@@ -11,7 +12,7 @@ enum namu_span_type {
     nm_span_subscript
 };
 
-enum {
+enum nm_align_type {
     nm_align_none,
     nm_align_left,
     nm_align_center,
@@ -25,6 +26,7 @@ enum {
 enum {
     nm_list_indent,
     nm_list_unordered,
+    nm_list_ordered,
     nm_list_upper_alpha,
     nm_list_lower_alpha,
     nm_list_upper_roman,
@@ -55,6 +57,7 @@ struct namuast_table_row {
 struct namuast_table {
     size_t max_col_count;
 
+    char* caption;
     char *bg_webcolor;
     char* width; 
     char* height; 
@@ -84,34 +87,53 @@ void namuast_remove_table(struct namuast_table* table);
 void namugen_scan(struct namugen_ctx *ctx, char *buffer, size_t len);
 
 /*
+ * Definitions of dynamic operations
+ */
+
+// IMPORTANT: 
+// As calling all dynamic operations, 
+// scanner give the ownership for char* and namuast_inline and relinquish its ownership.
+// Thus, memories which are given as arguments should be freed when operations are called, even if an operation returns false.
+// The only exceptions is when the field corresponding to an operation is NULL. In this case, scanner will internally free memory.
+struct nm_block_emitters {
+    // NOTE: don't free outer_inl
+    bool (*emit_raw)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* raw);
+    bool (*emit_highlighted_block)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, int level);
+    bool (*emit_colored_block)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, char* webcolor);
+    bool (*emit_html)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* html); 
+};
+
+/*
  * User-defined emitters
  */
+
+
+extern struct nm_block_emitters block_emitter_ops_inline;
+extern struct nm_block_emitters block_emitter_ops_paragraphic;
+// compile-time operations
 
 void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* inl_ast);
 void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inline* inl);
 void nm_emit_return(struct namugen_ctx* ctx);
 void nm_emit_hr(struct namugen_ctx* ctx);
-void nm_emit_html(struct namugen_ctx* ctx, char* html);
-void nm_emit_raw(struct namugen_ctx* ctx, char* raw);
-void nm_begin_comment(struct namugen_ctx* ctx, char* extra);
-void nm_end_comment(struct namugen_ctx* ctx);
-bool nm_in_comment(struct namugen_ctx* ctx);
+void nm_begin_footnote(struct namugen_ctx* ctx);
+void nm_end_footnote(struct namugen_ctx* ctx);
+bool nm_in_footnote(struct namugen_ctx* ctx);
 void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inline* inl);
 void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl);
 void nm_emit_list(struct namugen_ctx* ctx, struct namuast_list* li);
-void nm_emit_indent(struct namugen_ctx* ctx, struct namuast_list* ind);
+int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* fnt, char* extra);
 
 struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx);
 void namuast_remove_inline(struct namuast_inline *inl);
 
-void nm_inl_set_span_type(struct namuast_inline* inl, enum namu_span_type type);
-void nm_inl_set_color(struct namuast_inline* inl, char *webcolor);
-void nm_inl_set_highlight(struct namuast_inline* inl, int highlight_level);
+void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
 void nm_inl_emit_char(struct namuast_inline* inl, char c);
 void nm_inl_emit_link(struct namuast_inline* inl, char *link, char *alias, char *section);
 void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section);
 void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section);
 void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias);
 void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char *height, int align);
+void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx);
 
 #endif // !_NAMUGEN_H

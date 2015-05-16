@@ -9,6 +9,27 @@
 #define MAX_HEADING_NUMBER 6
 #define MAX_LIST_STACK_SIZE 32
 
+#ifdef VERBOSE 
+#include <stdio.h>
+#define verbose_log(...) { \
+        fprintf(stderr, "[verbose] "); \
+        fprintf(stderr, __VA_ARGS__); \
+}
+
+#define verbose_str(st, ed) { \
+    char *__p__; \
+    for (__p__ = st; __p__ < ed; __p__++) { \
+        fputc(*__p__, stderr); \
+    } \
+    fputc('\n', stderr); \
+}
+
+#else
+#define verbose_log(...) { }
+#define verbose_str(st, ed) {}
+#endif
+
+
 struct webcolor_name {
     const char *name;
     const char *webcolor; // don't free me!
@@ -236,6 +257,7 @@ struct namuast_table* namuast_make_table() {
     table->width = NULL;
     table->height = NULL;
     table->bg_webcolor = NULL;
+    table->caption = NULL;
     table->rows = calloc(table->row_size, sizeof(struct namuast_table_row));
     return table;
 }
@@ -261,6 +283,7 @@ void namuast_remove_table(struct namuast_table* table) {
     if (table->width) free(table->width);
     if (table->height) free(table->height);
     if (table->bg_webcolor) free(table->bg_webcolor);
+    if (table->caption) free(table->caption);
     free(table->rows);
     free(table);
 }
@@ -288,9 +311,22 @@ void namuast_remove_table(struct namuast_table* table) {
         } \
         if (__end__) break; \
     }
+#define RCONSUME_WHITESPACE(st, ed) \
+    while ((st) < (ed)) { \
+        bool __end__ = false; \
+        switch (*((ed) - 1)) { \
+        case ' ': case '\t': case '\n': \
+            ed--;  \
+            break; \
+        default: \
+            __end__ = true; \
+            break; \
+        } \
+        if (__end__) break; \
+    }
 #define IS_WHITESPACE(c) ((c) == ' ' || (c) == '\n' || (c) == '\t')
 #define EQ(p, border, c1) (!MET_EOF(p, border) && (*(p) == (c1)))
-#define SAFE_INC(p, border)  if (!MET_EOF(testp, border)) { testp++; }
+#define SAFE_INC(p, border)  if (!MET_EOF(p, border)) { p++; }
 #define EQSTR(p, border, str) (!strncmp((p), (str), (border) - (p)))
 
 // TODO: are these right?
@@ -376,7 +412,7 @@ static void remove_celltag(celltag *tag) {
     */
 }
 
-static inline void tbl_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, bool is_first, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
+static inline void table_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, bool is_first, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
     /*
     CONSUME_WHITESPACE(ctrl_st, ctrl_ed);
     char *sp = ctrl_st;
@@ -399,7 +435,7 @@ static inline void tbl_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, bool is_first
 }
 
 // Hacky
-static inline bool tbl_cell_dfa(char *p, char *border, char **p_out, int *colspan_out, char** cell_ctrl_start_p_out, char** cell_ctrl_end_p_out, char** content_start_p_out, char** content_end_p_out) {
+static inline bool parse_table_cell(char *p, char *border, char **p_out, int *colspan_out, char** cell_ctrl_start_p_out, char** cell_ctrl_end_p_out, char** content_start_p_out, char** content_end_p_out) {
     // (||)* \s* <(.|\n)*> \s* CONTENT \s* ||
     char *testp = p;
     int dup_pipes = 0;
@@ -411,14 +447,14 @@ static inline bool tbl_cell_dfa(char *p, char *border, char **p_out, int *colspa
         testp--;
         dup_pipes--;
     }
-    int colspan = dup_pipes / 2 + 1;
+    int colspan = dup_pipes / 2;
 
     CONSUME_WHITESPACE(testp, border);
 
     /* <(.|\n)*> */
     char *cell_ctrl_start_p = NULL, *cell_ctrl_end_p = NULL;
     if (EQ(testp, border, '<')) {
-        testp++;
+        testp++; // consume '<'
         char* _tmp_st_p = testp;
         UNTIL_REACHING1(testp, border, '>') {
             testp++;
@@ -435,29 +471,17 @@ static inline bool tbl_cell_dfa(char *p, char *border, char **p_out, int *colspa
 
     content_start_p = content_end_p = testp;
     while (1) {
-        if (IS_WHITESPACE(*testp)) {
-            char *ws_p = testp;
-            while (!MET_EOF(ws_p, border)) {
-                if (EQ(ws_p + 1, border, '|') && *ws_p == '|') {
-                    content_end_p = testp;
-                    testp = ws_p + 2;
-                    goto success;
-                } else if (!IS_WHITESPACE(*ws_p)) {
-                    testp = ws_p;
-                    break;
-                }
-                ws_p++;
-            }
-        } else if (EQ(testp + 1, border, '|') && *testp == '|') {
+        if (MET_EOF(testp, border)) {
+            return false;
+        }
+        if (EQ(testp + 1, border, '|') && *testp == '|') {
             content_end_p = testp;
             testp += 2;
-            goto success;
-        } else if (!MET_EOF(testp, border)) {
-            return false;
+            break;
         }
         testp++;
     }
-success:
+    RCONSUME_SPACETAB(content_start_p, content_end_p);
     *colspan_out = colspan;
     *p_out = testp;
     *cell_ctrl_start_p_out = cell_ctrl_start_p;
@@ -478,6 +502,7 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
     /*
      * ^|.*|
      */
+    testp++; // consume '|'
     caption_start = testp;
     UNTIL_REACHING2(testp, border, '|', '\n') {
         testp++;
@@ -489,6 +514,9 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
     testp++; // consume '|'
 
     struct namuast_table* table = namuast_make_table();
+    if (caption_start < caption_end) {
+        table->caption = dup_str(caption_start, caption_end);
+    }
     bool is_first = true;
     do {
         struct namuast_table_row* row = namuast_add_table_row(table);
@@ -497,27 +525,103 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
             int colspan;
             char* cell_ctrl_st, *cell_ctrl_ed;
             char* cell_content_st, *cell_content_ed;
-            if (!tbl_cell_dfa(testp, border, &testp, &colspan, &cell_ctrl_st, &cell_ctrl_ed, &cell_content_st, &cell_content_ed)) {
+            if (!parse_table_cell(testp, border, &testp, &colspan, &cell_ctrl_st, &cell_ctrl_ed, &cell_content_st, &cell_content_ed)) {
                 goto failure;
             }
             if (is_first)
                 is_first = false;
 
             // configure cell
+            char *dummy;
             cell->colspan = colspan;
-            cell->content = parse_inline(cell_content_st, cell_content_ed, &testp, ctx);
-
-
-            tbl_use_cell_ctrl(cell_ctrl_st, cell_ctrl_ed, is_first, table, row, cell);
+            cell->content = parse_inline(cell_content_st, cell_content_ed, &dummy, ctx);
+            table_use_cell_ctrl(cell_ctrl_st, cell_ctrl_ed, is_first, table, row, cell);
 
             CONSUME_SPACETAB(testp, border);
         } while (!MET_EOF(testp, border) && *testp != '\n');
         SAFE_INC(testp, border); // consume '\n'
     } while (EQ(testp, border, '|'));
+    *p_out = testp;
     return table;
 failure:
+    verbose_log("Table creation failed..\n");
     namuast_remove_table(table);
     return NULL;
+}
+
+
+static bool parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inline *outer_inl) {
+    if (EQ(p + 2, border, '{') && *(p + 1) == '{' && *p == '{') {
+        char *lastp = p + 3;
+        char *content_end_p;
+        bool closing_braces_found = true;
+        while (1) {
+            UNTIL_REACHING1(lastp, border, '}') {
+                lastp++;
+            }
+            if (MET_EOF(lastp, border)) {
+                content_end_p = lastp;
+                closing_braces_found  = false;
+                break;
+            } else if (EQ(lastp + 2, border, '}') && *(lastp + 1) == '}')  {
+                content_end_p = lastp;
+                lastp += 3;
+                break;
+            } else
+                lastp += 2;
+        }
+        if (closing_braces_found) {
+            char *testp = p + 3;
+            if (EQ(testp, border, '+') && ops->emit_highlighted_block) {
+                testp++;
+                verbose_log("got highlight mode");
+                if (!MET_EOF(testp, border) && *testp >= '0' && *testp <= '5') {
+                    int highlight_level = *testp - '0';
+                    verbose_log("got highlight level: %d\n", highlight_level);
+                    testp++;
+                    CONSUME_WHITESPACE(testp, border);
+                    RCONSUME_SPACETAB(testp, border);
+                    struct namuast_inline *content = parse_inline(testp, content_end_p, &testp, ctx);
+                    if (ops->emit_highlighted_block(ctx, outer_inl, content, highlight_level)) {
+                        *p_out = lastp;
+                        return true;
+                    }
+                }
+            } else if (EQ(testp, border, '#') && ops->emit_colored_block) {
+                testp++;
+                char *color_st = testp;
+                UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
+                    testp++;
+                }
+                char *color_ed = testp;
+                CONSUME_SPACETAB(testp, content_end_p);
+                RCONSUME_SPACETAB(testp, content_end_p);
+                struct namuast_inline *content = parse_inline(testp, content_end_p, &testp, ctx);
+                if (ops->emit_colored_block(ctx, outer_inl, content, dup_str(color_st, color_ed))) {
+                    *p_out = lastp;
+                    return true;
+                }
+                return lastp;
+            } else if (PREFIXSTR(testp, border, "!html") && ops->emit_html) {
+                testp += 5;
+                CONSUME_SPACETAB(testp, content_end_p);
+                RCONSUME_SPACETAB(testp, content_end_p);
+                if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                    *p_out = lastp;
+                    return true;
+                }
+            } else if (ops->emit_raw) {
+                // raw string
+                CONSUME_SPACETAB(testp, content_end_p);
+                RCONSUME_SPACETAB(testp, content_end_p);
+                if (ops->emit_raw(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                    *p_out = lastp;
+                    return true;
+                }
+            }
+        } 
+    }
+    return false;
 }
 
 static inline char* unescape_link(char *s) {
@@ -544,12 +648,12 @@ static inline char* unescape_link(char *s) {
         }
     }
     free(s);
-    return p;
+    return ret;
 }
 
 static bool strip_section(char *st, char *ed, char **link_out, char **section_out) {
     char *p;
-    for (p = ed - 3; st < p; p--) {
+    for (p = ed - 4; st < p; p--) {
         if (*p == '#' && *(p+1) == 's' && *(p+2) == '-') {
             *link_out = unescape_link(dup_str(st, p));
             *section_out = unescape_link(dup_str(p + 3, ed));
@@ -564,6 +668,7 @@ static void emit_internal_link(char *link_st, char *link_ed, char *alias, struct
         link = unescape_link(dup_str(link_st, link_ed));
         section = NULL;
     }
+
     if  (*link == '/') {
         memmove(link, link + 1, strlen(link));
         nm_inl_emit_lower_link(inl, link, alias, section);
@@ -578,7 +683,7 @@ static void emit_internal_link(char *link_st, char *link_ed, char *alias, struct
 void namu_scan_link_content(char *p, char* border, char* pipe_pos, struct namugen_ctx* ctx, struct namuast_inline* inl) {
     char* alias = NULL;
     if (pipe_pos) {
-        char *rpipe_pos = pipe_pos;
+        char *rpipe_pos = pipe_pos + 1;
         CONSUME_SPACETAB(rpipe_pos, border);
         alias = unescape_link(dup_str(rpipe_pos, border));
     }
@@ -632,7 +737,7 @@ void namu_scan_link_content(char *p, char* border, char* pipe_pos, struct namuge
         return;
     }
 prefix_failure:
-    emit_internal_link(p, pipe_pos, alias, inl);
+    emit_internal_link(p, pipe_pos? pipe_pos : border, alias, inl);
 }
 
 static inline int get_span_type_from_double_mark(char mark) {
@@ -664,16 +769,16 @@ char *supported_photo_exts[] = {
 static inline bool parse_list_header (char *p, char *border, char **content_st_out, int *list_type_out, int* indent_level_out) {
     int list_type;
 
-    char *ind_st = p;
-    CONSUME_SPACETAB(p, border);
-    char *ind_ed = p;
     char *testp = p;
+    char *ind_st = testp;
+    CONSUME_SPACETAB(testp, border);
+    char *ind_ed = testp;
 
     bool is_list = true;
     if (EQ(testp, border, '*') || EQ(testp + 1, border, '.')) {
         switch (*testp) {
         case '*':
-            testp++;
+            testp += 1;
             list_type = nm_list_unordered;
             break;
         case 'a':
@@ -692,16 +797,19 @@ static inline bool parse_list_header (char *p, char *border, char **content_st_o
             testp += 2;
             list_type = nm_list_upper_roman;
             break;
+        case '1':
+            testp += 2;
+            list_type = nm_list_ordered;
         default:
             is_list = false;
         }
     } else
         is_list = false;
 
+    CONSUME_SPACETAB(testp, border);
     if (!is_list) {
         list_type = nm_list_indent;
     }
-    CONSUME_SPACETAB(testp, border);
 
     *content_st_out = testp;
     *list_type_out = list_type;
@@ -716,6 +824,15 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
     struct namuast_inline *inl = namuast_make_inline(ctx);
     UNTIL_REACHING1(p, border, '\n') {
         switch (*p) {
+        case '{':
+            {
+                char *lastp;
+                if (parse_block(p, border, &lastp, &block_emitter_ops_inline, ctx, inl)) {
+                    p = lastp;
+                } else
+                    goto scan_literally;
+            }
+            break;
         case 'h':
             // https?://.*(.jpg|.jpeg|.png|.gif|?.jpg)
             {
@@ -735,8 +852,8 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                 UNTIL_REACHING3(testp, border, ' ', '\t', '\n') {
                     if (*testp == '.') {
                         if (*(testp - 1) == '?' && CASEPREFIXSTR(testp + 1, border, "jpg")) {
+                            url_ed = testp - 1;
                             testp += 4;
-                            url_ed = testp;
                             is_genuine_url = true;
                             break;
                         }
@@ -769,36 +886,47 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                         char *key_st, *key_ed;
                         char *value_st, *value_ed;
                         key_st = testp;
+                        CONSUME_SPACETAB(testp, border);
                         UNTIL_REACHING2(testp, border, '=', '\n') {
                             testp++;
                         }
-                        if (!EQ(testp, border, '=')) goto scan_literally;
+                        if (!EQ(testp, border, '=')) break;
                         key_ed = testp;
-                        if (key_st == key_ed) goto scan_literally;
+                        if (key_st == key_ed) 
+                            goto scan_literally;
+                        else
+                            RCONSUME_SPACETAB(key_st, key_ed);
                         testp++; // consume '='
+
+                        CONSUME_SPACETAB(testp, border);
                         value_st = testp;
                         UNTIL_REACHING4(testp, border, '&', '\n', ' ', '\t') {
                             testp++;
                         }
                         value_ed = testp;
-                        if (EQ(testp, border, '&')) {
-                            // hard wiring hack
-                            testp++;
-                            if (EQSTR(key_st, key_ed, "width")) {
-                                if (width) free(width);
-                                width = dup_str(value_ed, value_st);
-                            } else if (EQSTR(key_st, key_ed, "height")) {
-                                if (height) free(height);
-                                height = dup_str(value_st, value_ed);
-                            } else if (EQSTR(key_st, key_ed, "align")) {
-                                if (EQSTR(value_st, value_ed, "left")) {
-                                    align = nm_align_left;
-                                } else if (EQSTR(value_st, value_ed, "right")) {
-                                    align = nm_align_right;
-                                } else if (EQSTR(value_st, value_ed, "center")) {
-                                    align = nm_align_center;
-                                }
+                        RCONSUME_SPACETAB(value_st, value_ed);
+
+                        CONSUME_SPACETAB(testp, border);
+
+                        // now set up options, though it's a hard wiring hack...
+                        if (EQSTR(key_st, key_ed, "width")) {
+                            if (width) free(width);
+                            width = dup_str(value_st, value_ed);
+                        } else if (EQSTR(key_st, key_ed, "height")) {
+                            if (height) free(height);
+                            height = dup_str(value_st, value_ed);
+                        } else if (EQSTR(key_st, key_ed, "align")) {
+                            if (EQSTR(value_st, value_ed, "left")) {
+                                align = nm_align_left;
+                            } else if (EQSTR(value_st, value_ed, "right")) {
+                                align = nm_align_right;
+                            } else if (EQSTR(value_st, value_ed, "center")) {
+                                align = nm_align_center;
                             }
+                        }
+
+                        if (EQ(testp, border, '&')) {
+                            testp++; // consume '&'
                             continue;
                         }
                         break;
@@ -811,16 +939,27 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
             break;
         case '\'':
             if (EQ(p + 2, border, '\'') && *(p + 1) == '\'') {
-                if (cur_span_type == nm_span_none) {
-                    nm_inl_set_span_type(inl, nm_span_bold);
-                    cur_span_type = nm_span_bold;
-                } else if (cur_span_type == nm_span_bold) {
-                    nm_inl_set_span_type(inl, nm_span_none);
-                    cur_span_type = nm_span_none;
-                } else {
-                    goto scan_literally;
+                const char span_mark = '\'';
+                const int mark_type = nm_span_bold;
+
+                char* testp = p;
+                testp += 3;
+
+                char *content_st = testp;
+                while (!MET_EOF(testp + 3, border) && *testp != '\n' && !(*(testp + 2) == span_mark && *(testp + 1) == span_mark && *testp == span_mark)) {
+                    testp++;
                 }
-                p += 3;
+                if (MET_EOF(testp + 3, border) || *testp == '\n')
+                    goto scan_literally;
+                char *content_ed = testp;
+                testp += 3;
+                char *dummy;
+
+                CONSUME_SPACETAB(content_st, content_ed);
+                RCONSUME_SPACETAB(content_st, content_ed);
+                struct namuast_inline *span = parse_inline(content_st, content_ed, &dummy, ctx);
+                nm_inl_emit_span(inl, span, mark_type);
+                p = testp;
                 break;
             }
             // falling through intended
@@ -833,26 +972,75 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                 char span_mark = *p;
                 char* testp = p;
                 int mark_type = get_span_type_from_double_mark(span_mark);
-                if (EQ(testp + 1, border, span_mark)) {
-                    testp += 2;
-                    if (cur_span_type == nm_span_none) {
-                        nm_inl_set_span_type(inl, mark_type);
-                        cur_span_type = mark_type;
-                    } else if (cur_span_type == mark_type) {
-                        nm_inl_set_span_type(inl, nm_span_none);
-                        cur_span_type = nm_span_none;
-                    } else {
-                        goto scan_literally;
-                    }
-                    p = testp;
+                if (!EQ(testp + 1, border, span_mark))
+                    goto scan_literally;
+                testp += 2;
+                char *content_st = testp;
+                while (!MET_EOF(testp + 1, border) && *testp != '\n' && !(*(testp + 1) == span_mark && *testp ==  span_mark)) {
+                    testp++;
                 }
+                if (MET_EOF(testp + 1, border) || *testp == '\n')
+                    goto scan_literally;
+                char *content_ed = testp;
+                testp += 2;
+                char *dummy;
+
+                CONSUME_SPACETAB(content_st, content_ed);
+                RCONSUME_SPACETAB(content_st, content_ed);
+                struct namuast_inline *span = parse_inline(content_st, content_ed, &dummy, ctx);
+                nm_inl_emit_span(inl, span, mark_type);
+                p = testp;
+            }
+            break;
+        case ']':
+            if (!nm_in_footnote(ctx)) {
+                goto scan_literally;
+            } else {
+                p++;
+                nm_end_footnote(ctx);
+                goto exit;
             }
             break;
         case '[':
             {
+                // parse as footnote
+                if (EQ(p + 1, border, '*')) {
+                    if (nm_in_footnote(ctx)) {
+                        goto scan_literally;
+                    }
+                    p += 2;
+                    char *extra_st = p;
+                    UNTIL_REACHING4(p, border, ' ', '\n', '\t', ']') {
+                        p++;
+                    }
+                    char *extra_ed = p;
+
+                    CONSUME_WHITESPACE(p, border);
+                    char *extra;
+                    if (extra_st == extra_ed) {
+                        extra = NULL;
+                    } else
+                        extra = dup_str(extra_st, extra_ed);
+                    char *fnt_end_p;
+
+                    nm_begin_footnote(ctx);
+                    struct namuast_inline *footnote = parse_inline(p, border, &fnt_end_p, ctx);
+
+                    if (!EQ(fnt_end_p - 1, border, ']')) {
+                    // '[*' prefix pretented to be a footnote
+                        namuast_remove_inline(footnote); 
+                        if (extra) free(extra);
+                        goto scan_literally;
+                    }
+                    int id = nm_register_footnote(ctx, footnote, extra);
+                    nm_inl_emit_footnote_mark(inl, id, ctx);
+                    p = fnt_end_p;
+                    goto exit;
+                }
+
+                // parse as link
                 char *testp = p;
                 bool compatible_mode;
-
                 testp++;
                 if (EQ(testp, border, '[')) {
                     compatible_mode = false;
@@ -860,10 +1048,11 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                 } else {
                     compatible_mode = true;
                 }
-                char *link_st = testp, *link_ed;
+                char *link_st, *link_ed;
                 char *pipe_pos = NULL;
-                CONSUME_SPACETAB(testp, border);
 
+                CONSUME_SPACETAB(testp, border);
+                link_st = testp;
                 while (1) {
                     UNTIL_REACHING2(testp, border, ']', '\n') {
                         bool escape_next_char = false; 
@@ -906,18 +1095,21 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                 p = testp;
             }
             break;
+        default:
+            goto scan_literally;
         }
         continue;
 scan_literally:
         nm_inl_emit_char(inl, *p++);
     }
+exit:
+    *p_out = p;
     return inl;
 }
 
 
 
 static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ctx) {
-retry:
     if (MET_EOF(p, border))
         return border;
     // supose we are at the begining of line
@@ -958,101 +1150,33 @@ retry:
             }
             char *lastp = testp; // exclusive
             if (content_end_p && cls_num == h_num && h_num <= MAX_HEADING_NUMBER) {
-                // it is definitely a heading!
+                RCONSUME_SPACETAB(content_start_p, content_end_p);
+                // verbose_log("emit heading%d, %s:%s \n", h_num, content_start_p, content_end_p);
                 char *dummy;
                 struct namuast_inline *inl = parse_inline(content_start_p, content_end_p, &dummy, ctx);
                 nm_emit_heading(ctx, h_num, inl);
                 return lastp;
-            }
-        }
-        break;
-
-    case '[':
-        if (!nm_in_comment(ctx) && EQ(p + 1, border, '*')) {
-            p += 2;
-            char *extra_st = p;
-            UNTIL_REACHING4(p, border, ' ', '\n', '\t', ']') {
-                p++;
-            }
-            char *extra_ed = p;
-
-            CONSUME_WHITESPACE(p, border);
-            char *extra;
-            if (extra_st == extra_ed) {
-                extra = NULL;
-            } else
-                extra = dup_str(extra_st, extra_ed);
-            nm_begin_comment(ctx, extra);
-            goto retry;
-        }
-        break;
-
-    case ']':
-        if (nm_in_comment(ctx)) {
-            nm_end_comment(ctx);
-            return p + 1;
+            } else 
+                verbose_log("heading: %d != %d\n", h_num, cls_num);
         }
         break;
 
     case '{':
-        if (EQ(p + 2, border, '{') && *(p + 1) == '{') {
-            char *lastp = p + 3;
-            char *content_end_p;
-            bool closing_braces_found = true;
-            while (1) {
-                UNTIL_REACHING1(lastp, border, '}') {
-                    lastp++;
-                }
-                if (MET_EOF(lastp, border)) { 
-                    content_end_p = lastp;
-                    closing_braces_found  = false;
-                    break;
-                } else if (EQ(lastp + 2, border, '}') && *(lastp + 1) == '}')  {
-                    content_end_p = lastp;
-                    lastp += 3;
-                    break;
-                } else
-                    // }}x 
-                    // ^    
-                    // lastp
-                    lastp += 3;
+        {
+            char *lastp;
+            if (parse_block(p, border, &lastp, &block_emitter_ops_paragraphic, ctx, NULL)) {
+                return lastp;
             }
-            if (closing_braces_found) {
-                char *testp = p + 3;
-                if (EQ(testp, border, '+')) {
-                    testp++;
-                    if (!MET_EOF(testp, border) && *testp >= '0' && *testp <= '5') {
-                        int highlight_level = *testp - '0';
-                        testp++;
-                        CONSUME_WHITESPACE(testp, border);
-                        struct namuast_inline *content = parse_inline(testp, border, &testp, ctx);
-                        nm_inl_set_highlight(content, highlight_level);
-                        nm_emit_inline(ctx, content);
-                        return lastp;
-                    }
-                } else if (EQ(testp, border, '#')) {
-                    testp++;
-                    char *color_st = testp;
-                    UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
-                        testp++;
-                    }
-                    char *color_ed = testp;
-                    CONSUME_WHITESPACE(testp, border);
-                    struct namuast_inline *content = parse_inline(testp, border, &testp, ctx);
-                    nm_inl_set_color(content, dup_str(color_st, color_ed));
-                    nm_emit_inline(ctx, content);
-                    return lastp;
-                } else if (PREFIXSTR(testp, border, "!html")) {
-                    testp += 5;
-                    CONSUME_WHITESPACE(testp, border);
-                    nm_emit_html(ctx, dup_str(testp, content_end_p));
-                    return lastp;
-                } else {
-                    // raw string
-                    nm_emit_raw(ctx, dup_str(testp, content_end_p));
-                    return lastp;
-                }
+        }
+        break;
+    case '#':
+        if (EQ(p + 1, border, '#')) {
+            char *testp = p + 2;
+            UNTIL_REACHING1(testp, border, '\n') {
+                testp++;
             }
+            SAFE_INC(testp, border); // consume \n
+            return testp;
         }
         break;
     case '>':
@@ -1107,57 +1231,64 @@ retry:
             int stack_top = 0;
 
             struct namuast_list* result_list;
-#define MAKE_INLINE(p, border, list_type) namuast_make_list(list_type, parse_inline(p, border, &p, ctx))
-#define STACK_INSERT(list_type, indent_level, p) { \
-    if (stack_top < MAX_LIST_STACK_SIZE) { \
-        if (stack_top > 0 && stack[stack_top - 1].indent_level == indent_level) { \
-            struct namuast_list* tail = stack[stack_top - 1].tail; \
-            tail->next = MAKE_INLINE(p, border, list_type); \
-            stack[stack_top - 1].tail = tail->next; \
-        } else { \
-            stack[stack_top].head = stack[stack_top].tail = MAKE_INLINE(p, border, list_type); \
-            stack[stack_top].indent_level = indent_level; \
-            stack_top++; \
-        } \
-    } \
-}
+#define MAKE_LIST(p, lt) namuast_make_list(lt, parse_inline(p, border, &p, ctx))
 #define FLUSH_STACK(ind, dangling_list) { \
     dangling_list = NULL; \
     while (stack_top > 0 && stack[stack_top - 1].indent_level > ind)  { \
         struct namuast_list *sublist = stack[stack_top - 1].head; \
         stack_top--; \
         if (stack_top > 0) { \
-            stack[stack_top - 1].tail->sublist = sublist; \
+            struct namuast_list **p_sub_list = &stack[stack_top - 1].tail->sublist; \
+            if (*p_sub_list) { \
+                namuast_remove_list(*p_sub_list); \
+            } \
+            *p_sub_list = sublist; \
         } else { \
             dangling_list = sublist; \
             break; \
         } \
     } \
 }
-            bool is_list = parse_list_header(testp, border, &testp, &list_type, &indent_level);
-            STACK_INSERT(list_type, indent_level, testp);
+            parse_list_header(testp, border, &testp, &list_type, &indent_level);
+            stack[stack_top].head = stack[stack_top].tail = MAKE_LIST(testp, list_type);
+            stack[stack_top].indent_level = indent_level;
+            stack_top++;
 
-            char *next_testp = testp;
-            while (EQ(next_testp, border, '\n')) {
-                next_testp++; // consume '\n'
+            while (EQ(testp, border, '\n')) {
+                testp++; // consume '\n'
+
+                char *next_testp = testp;
                 parse_list_header(next_testp, border, &next_testp, &list_type, &indent_level);
                 if (indent_level == 0)
                     break;
 
                 struct namuast_list *dangling_list = NULL;
                 FLUSH_STACK(indent_level, dangling_list);
-                STACK_INSERT(list_type, indent_level, next_testp);
+
+                if (stack_top < MAX_LIST_STACK_SIZE) {
+                    if (stack_top > 0 && stack[stack_top - 1].indent_level == indent_level) {
+                        if (stack[stack_top - 1].tail->type != list_type) {
+                            list_type = stack[stack_top - 1].tail->type;
+                        }
+                        struct namuast_list* tail = stack[stack_top - 1].tail;
+                        tail->next = MAKE_LIST(next_testp, list_type);
+                        stack[stack_top - 1].tail = tail->next;
+                    } else {
+                        stack[stack_top].head = stack[stack_top].tail = MAKE_LIST(next_testp, list_type);
+                        stack[stack_top].indent_level = indent_level;
+                        stack_top++;
+                    }
+                }
                 if (dangling_list) {
+                    if (dangling_list->type != list_type)
+                        dangling_list->type = list_type;
                     dangling_list->next = stack[stack_top - 1].head;
                     stack[stack_top - 1].head = dangling_list;
                 }
                 testp = next_testp;
             }
             FLUSH_STACK(-1, result_list);
-            if (is_list)
-                nm_emit_list(ctx, result_list);
-            else
-                nm_emit_indent(ctx, result_list);
+            nm_emit_list(ctx, result_list);
             return testp;
 #undef MAKE_INLINE
 #undef STACK_INSERT
@@ -1171,6 +1302,8 @@ retry:
 
     char *retval;
     nm_emit_inline(ctx, parse_inline(p, border, &retval, ctx));
+    // verbose_log("inline chunk: ");
+    // verbose_str(p, retval);
     return retval;
 }
 
