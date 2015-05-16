@@ -33,9 +33,12 @@ static void free_ctx(struct namugen_ctx *ctx) {
 
 static void ctx_append(struct namugen_ctx *ctx, char *s) {
     size_t len = strlen(s);
-    if (len + ctx->len + 1 >= ctx->size) {
-        ctx->size *= 2;
-        ctx->s = realloc(ctx->s, ctx->size);
+    while (1) { 
+        if (len + ctx->len + 1 >= ctx->size) {
+            ctx->size *= 2;
+            ctx->s = realloc(ctx->s, ctx->size);
+        } else
+            break;
     }
     memcpy(ctx->s + ctx->len, s, len);
     ctx->len += len;
