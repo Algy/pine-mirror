@@ -318,7 +318,7 @@ void nm_inl_emit_char(struct namuast_inline* inl, char c) {
     push(inl, c);
 }
 
-void nm_inl_emit_link(struct namuast_inline* inl, char *link, char *alias, char *section) {
+void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section) {
     append(inl, "[wiki:");
     append(inl, link);
     if (section) {
@@ -422,6 +422,10 @@ void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char 
     SAFELY_FREE(url);
     SAFELY_FREE(width);
     SAFELY_FREE(height);
+}
+void nm_on_start(struct namugen_ctx* ctx) {
+}
+void nm_on_finish(struct namugen_ctx* ctx) {
 }
 
 void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx) {

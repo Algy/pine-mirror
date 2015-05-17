@@ -57,6 +57,7 @@ struct namuast_table_row {
 struct namuast_table {
     size_t max_col_count;
 
+    int align;
     char* caption;
     char *bg_webcolor;
     char* width; 
@@ -112,7 +113,7 @@ extern struct nm_block_emitters block_emitter_ops_inline;
 extern struct nm_block_emitters block_emitter_ops_paragraphic;
 // compile-time operations
 
-void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* inl_ast);
+void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* content);
 void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inline* inl);
 void nm_emit_return(struct namugen_ctx* ctx);
 void nm_emit_hr(struct namugen_ctx* ctx, int hr_num);
@@ -122,6 +123,8 @@ bool nm_in_footnote(struct namugen_ctx* ctx);
 void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inline* inl);
 void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl);
 void nm_emit_list(struct namugen_ctx* ctx, struct namuast_list* li);
+void nm_on_start(struct namugen_ctx* ctx);
+void nm_on_finish(struct namugen_ctx* ctx);
 int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* fnt, char* extra);
 
 struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx);
@@ -129,11 +132,12 @@ void namuast_remove_inline(struct namuast_inline *inl);
 
 void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
 void nm_inl_emit_char(struct namuast_inline* inl, char c);
-void nm_inl_emit_link(struct namuast_inline* inl, char *link, char *alias, char *section);
+void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section);
 void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section);
 void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section);
 void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias);
 void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char *height, int align);
 void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx);
+
 
 #endif // !_NAMUGEN_H
