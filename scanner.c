@@ -603,7 +603,7 @@ static bool parse_block(char *p, char *border, char **p_out, struct nm_block_emi
                     return true;
                 }
                 return lastp;
-            } else if (PREFIXSTR(testp, border, "!html") && ops->emit_html) {
+            } else if (PREFIXSTR(testp, border, "#!html") && ops->emit_html) {
                 testp += 5;
                 CONSUME_SPACETAB(testp, content_end_p);
                 RCONSUME_SPACETAB(testp, content_end_p);

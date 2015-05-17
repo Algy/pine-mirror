@@ -3,46 +3,43 @@
 
 #include "sds/sds.h"
 #include <string.h>
+
+#ifndef NULL
+#  define NULL ((void *)0)
+#endif
 static sds escape_html_content(char* content) {
     size_t len = strlen(content);
-    sds ret = sdsnewlen((char *)0, len + len / 2);
+    sds ret = sdsnewlen(NULL, len + len / 2);
+    sdsupdatelen(ret);
 
     char *p;
-
     char *safe_chunk_st = content;
 
     p = content;
     char ch;
     while ((ch = *p)) {
-        char* esc_entity;
-        int ecape = 0;
+        char* esc_entity = NULL;
         switch (ch) {
         case '&':
-            escape = 1;
             esc_entity = "&amp;";
             break;
         case '<':
-            escape = 1;
             esc_entity = "&lt;";
             break;
         case '>':
-            escape = 1;
             esc_entity = "&gt;";
             break;
         case '\"':
-            escape = 1;
             esc_entity = "&quot;";
             break;
         case '\'':
-            escape = 1;
             esc_entity = "&#x27;";
             break;
         case '/':
-            escape = 1;
             esc_entity = "&#x2F;";
             break;
         }
-        if (escape) {
+        if (esc_entity) {
             char *safe_chunk_ed = p;
             size_t len = safe_chunk_ed - safe_chunk_st;
             ret = sdscatlen(ret, safe_chunk_st, len);
@@ -80,27 +77,40 @@ static inline sds append_html_content_char(sds appendee, char ch) {
     if (esc_entity) 
         return sdscat(appendee, esc_entity);
     else
-        return sdscatlen(appendee, &c, 1);
+        return sdscatlen(appendee, &ch, 1);
 }
 
+
 static sds escape_html_attr(char* attr) {
-#define __TO_HEX__(hex) ((hex) >= 10)?(((hex) - 10) + 'A'):((hex) + '0')
-    // escape all non-alphanumeric character whose code point is less than 128
     sds ret = sdsnewlen(NULL, strlen(attr) * 2);
+    sdsupdatelen(ret);
     char *p;
+
     for (p = attr; *p; p++) {
         char ch = *p;
-        if (ch <= 127 && !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) {
-            // aggressive escaping
-            char hex[] = {'&', '#', 'x', 'H', 'H', ';'};
-            hex[3] = __TO_HEX__(ch / 16);
-            hex[4] = __TO_HEX__(ch % 16);
-            ret = sdscatlen(ret, hex, sizeof(hex));
-        } else {
+        switch (ch) {
+        case '&':  
+            ret = sdscat(ret, "&amp;");
+            break;
+        case '\"': 
+            ret = sdscat(ret, "&quot;");
+            break;
+        case '\'':
+            ret = sdscat(ret, "&apos;");
+            break;
+        case '<':
+            ret = sdscat(ret, "&lt;");
+            break;
+        case '>':
+            ret = sdscat(ret, "&gt;");
+            break;
+        default:
             ret = sdscatlen(ret, &ch, 1);
+            break;
         }
     }
 #undef __TO_HEX__
     return ret;
 }
+
 #endif
