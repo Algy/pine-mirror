@@ -573,43 +573,62 @@ static bool parse_block(char *p, char *border, char **p_out, struct nm_block_emi
         }
         if (closing_braces_found) {
             char *testp = p + 3;
-            if (EQ(testp, border, '+') && ops->emit_highlighted_block) {
-                testp++;
-                verbose_log("got highlight mode");
-                if (!MET_EOF(testp, border) && *testp >= '0' && *testp <= '5') {
-                    int highlight_level = *testp - '0';
-                    verbose_log("got highlight level: %d\n", highlight_level);
+            if (EQ(testp, border, '+') ) {
+                if (ops->emit_highlighted_block) {
                     testp++;
-                    CONSUME_WHITESPACE(testp, border);
-                    RCONSUME_SPACETAB(testp, border);
+                    verbose_log("got highlight mode");
+                    if (!MET_EOF(testp, border) && *testp >= '1' && *testp <= '5') {
+                        int highlight_level = *testp - '0';
+                        verbose_log("got highlight level: %d\n", highlight_level);
+                        testp++;
+                        CONSUME_WHITESPACE(testp, border);
+                        RCONSUME_SPACETAB(testp, border);
+                        struct namuast_inline *content = parse_inline(testp, content_end_p, &testp, ctx);
+                        if (ops->emit_highlighted_block(ctx, outer_inl, content, highlight_level)) {
+                            *p_out = lastp;
+                            return true;
+                        }
+                    }
+                }
+            } else if (EQ(testp, border, '#')) {
+                if (ops->emit_colored_block) {
+                    testp++;
+                    char *color_st = testp;
+                    UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
+                        testp++;
+                    }
+                    char *color_ed = testp;
+                    char *color_str = dup_str(color_st, color_ed);
+                    char *colorname;
+                    char *webcolor;
+                    if ((colorname = find_webcolor_by_name(color_str))) {
+                        webcolor = dup_str(colorname, colorname + strlen(colorname));
+                    } else {
+                        size_t cn_len = strlen(color_str);
+                        webcolor = calloc(cn_len + 1 + 1, sizeof(char));
+                        webcolor[0] = '#';
+                        strcpy(webcolor + 1, color_str);
+                    }
+                    free(color_str);
+
+                    CONSUME_SPACETAB(testp, content_end_p);
+                    RCONSUME_SPACETAB(testp, content_end_p);
                     struct namuast_inline *content = parse_inline(testp, content_end_p, &testp, ctx);
-                    if (ops->emit_highlighted_block(ctx, outer_inl, content, highlight_level)) {
+                    if (ops->emit_colored_block(ctx, outer_inl, content, webcolor)) {
                         *p_out = lastp;
                         return true;
                     }
+                    return lastp;
                 }
-            } else if (EQ(testp, border, '#') && ops->emit_colored_block) {
-                testp++;
-                char *color_st = testp;
-                UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
-                    testp++;
-                }
-                char *color_ed = testp;
-                CONSUME_SPACETAB(testp, content_end_p);
-                RCONSUME_SPACETAB(testp, content_end_p);
-                struct namuast_inline *content = parse_inline(testp, content_end_p, &testp, ctx);
-                if (ops->emit_colored_block(ctx, outer_inl, content, dup_str(color_st, color_ed))) {
-                    *p_out = lastp;
-                    return true;
-                }
-                return lastp;
-            } else if (PREFIXSTR(testp, border, "#!html") && ops->emit_html) {
-                testp += 5;
-                CONSUME_SPACETAB(testp, content_end_p);
-                RCONSUME_SPACETAB(testp, content_end_p);
-                if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
-                    *p_out = lastp;
-                    return true;
+            } else if (PREFIXSTR(testp, border, "#!html")) {
+                if (ops->emit_html) {
+                    testp += 5;
+                    CONSUME_SPACETAB(testp, content_end_p);
+                    RCONSUME_SPACETAB(testp, content_end_p);
+                    if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                        *p_out = lastp;
+                        return true;
+                    }
                 }
             } else if (ops->emit_raw) {
                 // raw string
