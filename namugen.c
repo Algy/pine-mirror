@@ -52,7 +52,7 @@ static sds generate_link(sds buf, bool exist, char *arg_href, char *section, cha
     }
     sds link_class = sdsempty();
 
-    if (exist) {
+    if (!exist) {
         link_class = sdscat(link_class, " not-exist");
     }
 
