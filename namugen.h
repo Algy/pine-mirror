@@ -62,7 +62,7 @@ struct namuast_table {
     size_t max_col_count;
 
     int align;
-    char* caption;
+    struct namuast_inline* caption;
     char *bg_webcolor;
     char* width; 
     char* height; 
@@ -135,6 +135,7 @@ struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx);
 void namuast_remove_inline(struct namuast_inline *inl);
 
 void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
+void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) ;
 void nm_inl_emit_char(struct namuast_inline* inl, char c);
 void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section);
 void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section);

@@ -194,6 +194,7 @@ const char* find_webcolor_by_name(char *name) {
 
 
 static struct namuast_inline* parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx);
+static inline struct namuast_inline* parse_multiline(char *p, char* border, struct namugen_ctx* ctx);
 
 struct namuast_list* namuast_make_list(int type, struct namuast_inline* content) {
     struct namuast_list* retval = calloc(sizeof(struct namuast_list), 1);
@@ -259,6 +260,7 @@ struct namuast_table* namuast_make_table() {
     table->height = NULL;
     table->bg_webcolor = NULL;
     table->caption = NULL;
+    table->max_col_count = 0;
     table->rows = calloc(table->row_size, sizeof(struct namuast_table_row));
     return table;
 }
@@ -284,7 +286,7 @@ void namuast_remove_table(struct namuast_table* table) {
     if (table->width) free(table->width);
     if (table->height) free(table->height);
     if (table->bg_webcolor) free(table->bg_webcolor);
-    if (table->caption) free(table->caption);
+    if (table->caption) namuast_remove_inline(table->caption);
     free(table->rows);
     free(table);
 }
@@ -495,7 +497,7 @@ static inline bool parse_table_cell(char *p, char *border, char **p_out, int *co
 static struct namuast_table* parse_table(char* p, char* border, char **p_out, struct namugen_ctx* ctx) {
     // assert(*p == '|');
     /*
-     * ^|.*|(||)* \s* <(.|\n)*> \s* CONTENT \s* ( ( (||)+ <.*> CONTENT)* || \n )+
+     * ^|(.|\n)*|(||)* \s* <(.|\n)*> \s* CONTENT \s* ( ( (||)+ <.*> CONTENT)* || \n )+
      */
     
     char *testp = p;
@@ -516,8 +518,9 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
 
     struct namuast_table* table = namuast_make_table();
     if (caption_start < caption_end) {
-        table->caption = dup_str(caption_start, caption_end);
+        table->caption = parse_multiline(caption_start, caption_end, ctx);
     }
+
     bool is_first = true;
     do {
         struct namuast_table_row* row = namuast_add_table_row(table);
@@ -533,9 +536,8 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
                 is_first = false;
 
             // configure cell
-            char *dummy;
             cell->colspan = colspan;
-            cell->content = parse_inline(cell_content_st, cell_content_ed, &dummy, ctx);
+            cell->content = parse_multiline(cell_content_st, cell_content_ed, ctx);
             table_use_cell_ctrl(cell_ctrl_st, cell_ctrl_ed, is_first, table, row, cell);
 
             CONSUME_SPACETAB(testp, border);
@@ -591,13 +593,23 @@ static bool parse_block(char *p, char *border, char **p_out, struct nm_block_emi
                     }
                 }
             } else if (EQ(testp, border, '#')) {
-                if (ops->emit_colored_block) {
+                testp++;
+                char *color_st = testp;
+                UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
                     testp++;
-                    char *color_st = testp;
-                    UNTIL_REACHING3(testp, border, ' ', '\n', '\t') {
-                        testp++;
+                }
+                char *color_ed = testp;
+                if (EQSTR(color_st, color_ed, "!html")) {
+                    if (ops->emit_html) {
+                        testp += 5;
+                        CONSUME_SPACETAB(testp, content_end_p);
+                        RCONSUME_SPACETAB(testp, content_end_p);
+                        if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                            *p_out = lastp;
+                            return true;
+                        }
                     }
-                    char *color_ed = testp;
+                } else if (ops->emit_colored_block) {
                     char *color_str = dup_str(color_st, color_ed);
                     char *colorname;
                     char *webcolor;
@@ -619,16 +631,6 @@ static bool parse_block(char *p, char *border, char **p_out, struct nm_block_emi
                         return true;
                     }
                     return lastp;
-                }
-            } else if (PREFIXSTR(testp, border, "#!html")) {
-                if (ops->emit_html) {
-                    testp += 5;
-                    CONSUME_SPACETAB(testp, content_end_p);
-                    RCONSUME_SPACETAB(testp, content_end_p);
-                    if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
-                        *p_out = lastp;
-                        return true;
-                    }
                 }
             } else if (ops->emit_raw) {
                 // raw string
@@ -1126,6 +1128,26 @@ exit:
     return inl;
 }
 
+static inline struct namuast_inline* parse_multiline(char *p, char* border, struct namugen_ctx* ctx) {
+    struct namuast_inline* inl = parse_inline(p, border, &p, ctx);
+    UNTIL_NOT_REACHING1(p, border, '\n') {
+        p++;
+        nm_inl_cat(inl, NULL, true);
+    }
+
+    while (!MET_EOF(p, border)) {
+        struct namuast_inline* next_inl = parse_inline(p, border, &p, ctx);
+        nm_inl_cat(inl, next_inl, false);
+        namuast_remove_inline(next_inl);
+
+        UNTIL_NOT_REACHING1(p, border, '\n') {
+            p++;
+            nm_inl_cat(inl, NULL, true);
+        }
+    }
+    return inl;
+}
+
 
 
 static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ctx) {
@@ -1133,8 +1155,8 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
         return border;
     // supose we are at the begining of line
     switch (*p) {
-    case '=':
-        {
+    case '=': 
+        { 
             int h_num = 1;
             char *testp = p;
             testp++;

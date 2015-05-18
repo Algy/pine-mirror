@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     fseek(fp, 0L, SEEK_END);
     long filesize = ftell(fp);
     fseek(fp, 0L, SEEK_SET);
-    char *buffer = calloc(filesize, 1);
+    char *buffer = calloc(filesize + 1, 1);
     fread(buffer, 1, filesize + 1, fp);
     buffer[filesize] = 0;
 

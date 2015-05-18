@@ -406,9 +406,7 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
     }
 
     if (tbl->caption) {
-        sds val = escape_html_content(tbl->caption);
-        tbl_caption = sdscatprintf(tbl_caption, "<caption>%s</caption>", val);
-        sdsfree(val);
+        tbl_caption = sdscatprintf(tbl_caption, "<caption>%s</caption>", tbl->caption->buf);
     } 
 
     tbl_style = add_html_style(tbl_style, "background-color", tbl->bg_webcolor);
@@ -459,7 +457,7 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
             if (cell->align != nm_align_none)
                 cell_style = add_html_style(cell_style, "text-align", align_to_str(cell->align));
 
-            if (cell->align != nm_valign_none)
+            if (cell->valign != nm_valign_none)
                 cell_style = add_html_style(cell_style, "vertical-align", align_to_str(cell->valign));
             cell_style = add_html_style(cell_style, "background-color", cell->bg_webcolor);
             main_buf = sdscatprintf(main_buf, "<td style='%s'%s>%s</td>", cell_style, cell_attr, cell->content->buf);
@@ -745,6 +743,13 @@ void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char 
         free(width);
     if (height)
         free(height);
+}
+
+void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) {
+    if (insert_br)
+        inl_dest->buf = sdscat(inl_dest->buf, "<br>");
+    if (inl_src)
+        inl_dest->buf = sdscatsds(inl_dest->buf, inl_src->buf);
 }
 
 void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx) {
