@@ -450,7 +450,7 @@ static inline bool parse_table_cell(char *p, char *border, char **p_out, int *co
         testp--;
         dup_pipes--;
     }
-    int colspan = dup_pipes / 2;
+    int colspan = dup_pipes / 2 + 1;
 
     CONSUME_WHITESPACE(testp, border);
 
@@ -521,9 +521,9 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
         table->caption = parse_multiline(caption_start, caption_end, ctx);
     }
 
-    bool is_first = true;
-    do {
+    while (1) {
         struct namuast_table_row* row = namuast_add_table_row(table);
+        bool is_first = true;
         do {
             struct namuast_table_cell* cell = namuast_add_table_cell(table, row);
             int colspan;
@@ -543,7 +543,13 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
             CONSUME_SPACETAB(testp, border);
         } while (!MET_EOF(testp, border) && *testp != '\n');
         SAFE_INC(testp, border); // consume '\n'
-    } while (EQ(testp, border, '|'));
+
+        if (EQ(testp + 1, border, '|') && *testp == '|') {
+            testp += 2;
+            continue;
+        }
+        break;
+    }
     *p_out = testp;
     return table;
 failure:
@@ -1149,6 +1155,7 @@ static inline struct namuast_inline* parse_multiline(char *p, char* border, stru
 }
 
 
+#define CONSUME_IF_ENDL(p, border) if (EQ(p, border, '\n')) { (p)++; }
 
 static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ctx) {
     if (MET_EOF(p, border))
@@ -1193,6 +1200,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             if (content_end_p && cls_num == h_num && h_num <= MAX_HEADING_NUMBER) {
                 RCONSUME_SPACETAB(content_start_p, content_end_p);
                 // verbose_log("emit heading%d, %s:%s \n", h_num, content_start_p, content_end_p);
+                CONSUME_IF_ENDL(lastp, border);
                 char *dummy;
                 struct namuast_inline *inl = parse_inline(content_start_p, content_end_p, &dummy, ctx);
                 nm_emit_heading(ctx, h_num, inl);
@@ -1206,6 +1214,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
         {
             char *lastp;
             if (parse_block(p, border, &lastp, &block_emitter_ops_paragraphic, ctx, NULL)) {
+            CONSUME_IF_ENDL(lastp, border);
                 return lastp;
             }
         }
@@ -1230,6 +1239,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             }
             CONSUME_SPACETAB(testp, border);
             nm_emit_quotation(ctx, parse_inline(testp, border, &testp, ctx));
+            CONSUME_IF_ENDL(testp, border);
             return testp;
         }
         break;
@@ -1239,6 +1249,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             struct namuast_table *table = parse_table(p, border, &p_ret, ctx);
             if (table) {
                 nm_emit_table(ctx, table);
+                CONSUME_IF_ENDL(p_ret, border);
                 return p_ret;
             }
         }
@@ -1253,6 +1264,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             }
             if (num >= 4 && num <= 10) {
                 nm_emit_hr(ctx, num);
+                CONSUME_IF_ENDL(testp, border);
                 return testp;
             }
         }
@@ -1330,6 +1342,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             }
             FLUSH_STACK(-1, result_list);
             nm_emit_list(ctx, result_list);
+            CONSUME_IF_ENDL(testp, border);
             return testp;
 #undef MAKE_INLINE
 #undef STACK_INSERT
