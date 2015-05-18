@@ -219,6 +219,7 @@ static void do_emit_toc(struct namugen_ctx* ctx) {
         sdsfree(ctx->main_buf);
         ctx->main_buf = new_buf;
         sdsfree(toc_buf);
+        ctx->toc_count = 0;
     }
 }
 
@@ -627,7 +628,7 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
                     fn = calloc(left_par - link + 1, sizeof(char));
                     arg = calloc(right_par - left_par - 1 + 1, sizeof(char));
                     memcpy(fn, link, sizeof(char) * (left_par - link));
-                    memcpy(fn, left_par + 1, sizeof(char) * (right_par - left_par - 1));
+                    memcpy(arg, left_par + 1, sizeof(char) * (right_par - left_par - 1));
 
                     bool fn_call_success = hook_itfc->hook_fn_call(hook_itfc, ctx, inl, fn, arg);
                     free(fn);
