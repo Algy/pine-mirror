@@ -127,7 +127,7 @@ int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* content
 }
 
 static void emit_fnt_item(struct namuast_inline* inl, struct fnt *fnt) {
-    sds id_def = sdscatprintf(sdsempty(), " id='#fn-%d'", fnt->id);
+    sds id_def = sdscatprintf(sdsempty(), " id='fn-%d'", fnt->id);
     sds href = sdscatprintf(sdsempty(), "#rfn-%d", fnt->id);
 
     sds mark;
@@ -175,6 +175,7 @@ static sds dfs_toc(sds buf, struct heading* hd) {
     if (hd->parent) { 
         // when it is not the root: sentinel node
         buf = sdscat(buf, "<span class='toc-item'>");
+        buf = sdscatprintf(buf, "<a href='#s-%s'>%s</a>.", hd->section_name, hd->section_name);
         buf = sdscatsds(buf, hd->content->buf);
         buf = sdscat(buf, "</span>");
     }
@@ -240,7 +241,7 @@ void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* 
     struct heading* hd = make_heading(p, content, h_num);
 
     sds section_name = hd->section_name; // borrowed
-    ctx->main_buf = sdscatprintf(ctx->main_buf, "<h%d><a class='wiki-heading' href='#toc' id='#s-%s'>%s.</a>%s</h%d>", h_num, section_name, section_name, content->buf, h_num);
+    ctx->main_buf = sdscatprintf(ctx->main_buf, "<h%d><a class='wiki-heading' href='#toc' id='s-%s'>%s.</a>%s</h%d>", h_num, section_name, section_name, content->buf, h_num);
 }
 
 static sds make_section_name(struct heading *hd) {
@@ -750,7 +751,7 @@ void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namuge
     struct fnt* fnt = get_footnote_by_id(ctx, id);
     if (!fnt) return;
 
-    sds id_def = sdscatprintf(sdsempty(), "id='#rfn-%d'", id);
+    sds id_def = sdscatprintf(sdsempty(), "id='rfn-%d'", id);
     sds href = sdscatprintf(sdsempty(), "#fn-%d", id);
 
     sds mark;
