@@ -112,6 +112,7 @@ static void remove_fnt(struct fnt *fnt) {
 
 static void remove_fnt_list(struct list *fnt_list) {
     while (!list_empty(fnt_list)) {
+
         struct fnt *fnt = list_entry(list_pop_back(fnt_list), struct fnt, elem);
         remove_fnt(fnt);
     }
@@ -166,7 +167,7 @@ static void emit_toc(struct namuast_inline *inl) {
     // lazy emission
     struct namugen_ctx *ctx = inl->ctx;
     if (ctx->toc_count < MAX_TOC_COUNT) {
-        ctx->toc_positions[ctx->toc_count++] = ctx->main_buf + sdslen(ctx->main_buf);
+        ctx->toc_positions[ctx->toc_count++] = sdslen(ctx->main_buf);
     }
 }
 
@@ -206,14 +207,14 @@ static void do_emit_toc(struct namugen_ctx* ctx) {
         sdsupdatelen(new_buf);
 
         int idx;
-        char *prev_position = ctx->main_buf;
+        size_t prev_position = 0;
         for (idx = 0; idx < ctx->toc_count; idx++) {
-            char *pos = ctx->toc_positions[idx];
-            ctx->main_buf = sdscatlen(ctx->main_buf, prev_position, pos - prev_position);
+            size_t pos = ctx->toc_positions[idx];
+            new_buf = sdscatlen(new_buf, ctx->main_buf + prev_position,  pos - prev_position);
             new_buf = sdscatsds(new_buf, toc_buf);
             prev_position = pos;
         }
-        new_buf = sdscatlen(new_buf, prev_position, ctx->main_buf + main_buf_len - prev_position);
+        new_buf = sdscatlen(new_buf, ctx->main_buf + prev_position, main_buf_len - prev_position);
         sdsfree(ctx->main_buf);
         ctx->main_buf = new_buf;
         sdsfree(toc_buf);
@@ -226,11 +227,12 @@ void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* 
     struct heading* p = ctx->root_heading;
     // fine 'rightmost' node
     while (!list_empty(&p->children)) {
-        p = list_entry(list_tail(&p->children), struct heading, elem);
+        struct list_elem *e = list_back(&p->children);
+        p = list_entry(e, struct heading, elem);
     }
 
     while (p->parent) {
-        if (p->h_num < h_num && (list_empty(&p->children) || h_num <= list_entry(list_tail(&p->children), struct heading, elem)->h_num)) {
+        if (p->h_num < h_num && (list_empty(&p->children) || h_num <= (list_entry(list_back(&p->children), struct heading, elem))->h_num)) {
             break;
         }
         p = p->parent;
@@ -263,7 +265,7 @@ static struct heading* make_heading(struct heading* parent, struct namuast_inlin
         if (list_empty(&parent->children)) {
             ret->seq = 1;
         } else {
-            struct heading* last = list_entry(list_tail(&parent->children), struct heading, elem);
+            struct heading* last = list_entry(list_back(&parent->children), struct heading, elem);
             ret->seq = last->seq + 1;
         }
         list_push_back(&parent->children, &ret->elem);

@@ -168,7 +168,7 @@ struct namugen_ctx {
 
     struct heading* root_heading; // sentinel-heading
 
-    char* toc_positions[MAX_TOC_COUNT];
+    size_t toc_positions[MAX_TOC_COUNT];
     int toc_count;
 
     sds main_buf;
