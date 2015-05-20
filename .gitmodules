@@ -10,3 +10,9 @@
 [submodule "hiredis"]
 	path = hiredis
 	url = https://github.com/redis/hiredis
+[submodule "libctemplate"]
+	path = libctemplate
+	url = https://github.com/ac000/libctemplate.git
+[submodule "mariadb-connector-c"]
+	path = mariadb-connector-c
+	url = https://github.com/MariaDB/mariadb-connector-c.git
