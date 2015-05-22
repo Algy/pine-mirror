@@ -14,12 +14,10 @@ void dummy_docs_exist(struct namugen_doc_itfc* x, int argc, char** docnames, boo
 
 #include "escaper.inc"
 sds doc_href(struct namugen_doc_itfc* x, char* doc_name) {
-    sds val = escape_html_attr(doc_name);
-
+    sds chunk = escape_url_chunk(doc_name, false);
     sds ret = sdsnew("/wiki/page/");
-    // TODO: url escaping here
-    ret = sdscatsds(ret, val);
-    sdsfree(val);
+    ret = sdscatsds(ret, chunk);
+    sdsfree(chunk);
     return ret;
 }
 
