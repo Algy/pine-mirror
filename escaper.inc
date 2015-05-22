@@ -109,8 +109,32 @@ static sds escape_html_attr(char* attr) {
             break;
         }
     }
-#undef __TO_HEX__
     return ret;
+}
+
+#define __TO_HEX__(x) (((x) >= 10)? (((x) - 10) + 'A'):((x) + '0'))
+static sds escape_url_chunk(char* chunk, bool plus_used_as_space) {
+    char *p;
+    sds result = sdsempty();
+    for (p = chunk; *p; p++) {
+        // ouput as is
+        char c = *p;
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            c == '*' || c == '-' || c == '.' || c == '_') {
+            result = sdscatlen(result, p, 1);
+        } else if (plus_used_as_space && c == ' ') {
+            result = sdscatlen(result, " ", 1);
+        } else {
+            unsigned char uc = (unsigned char)c;
+            char s[4];
+            s[0] = '%';
+            s[1] = __TO_HEX__(uc >> 4);
+            s[2] = __TO_HEX__(uc & 0x0F);
+            s[3] = 0;
+            result = sdscatlen(result, s, 3);
+        }
+    }
+    return result;
 }
 
 #endif
