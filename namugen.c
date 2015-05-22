@@ -101,42 +101,32 @@ static void remove_chunk_list(struct list *chunk_list) {
     }
 }
 
-static inline void inl_flush_fast_buf(struct namuast_inline *dest) {
-    if (sdslen(dest->fast_buf) > 0) {
+static inline void flush_fast_buf(sds *p_fast_buf, struct list* chunk_list) {
+    sds fast_buf = *p_fast_buf;
+    if (sdslen(fast_buf) > 0) {
         bool attached = false;
-        if (!list_empty(&dest->chunk_list)) { 
-            struct sdschunk *back = list_entry(list_back(&dest->chunk_list), struct sdschunk, elem);
+        if (!list_empty(chunk_list)) { 
+            struct sdschunk *back = list_entry(list_back(chunk_list), struct sdschunk, elem);
             if (!back->is_lazy) {
-                back->buf = sdscatsds(back->buf, dest->fast_buf);
-                sdsclear(dest->fast_buf);
+                back->buf = sdscatsds(back->buf, fast_buf);
+                sdsclear(fast_buf);
                 attached = true;
             }
         }
         if (!attached) {
-            struct sdschunk *fast_buf_chunk = make_sdschunk_steal(dest->fast_buf);
-            list_push_back(&dest->chunk_list, &fast_buf_chunk->elem);
-            dest->fast_buf = sdsempty();
+            struct sdschunk *fast_buf_chunk = make_sdschunk_steal(fast_buf);
+            list_push_back(chunk_list, &fast_buf_chunk->elem);
+            *p_fast_buf = sdsempty();
         }
-    } 
+    }
+}
+
+static inline void inl_flush_fast_buf(struct namuast_inline *dest) {
+    flush_fast_buf(&dest->fast_buf, &dest->chunk_list);
 }
 
 static inline void ctx_flush_main_fast_buf(struct namugen_ctx* ctx) {
-    if (sdslen(ctx->main_fast_buf) > 0) {
-        bool attached = false;
-        if (!list_empty(&ctx->main_chunk_list)) { 
-            struct sdschunk *back = list_entry(list_back(&ctx->main_chunk_list), struct sdschunk, elem);
-            if (!back->is_lazy) {
-                back->buf = sdscatsds(back->buf, ctx->main_fast_buf);
-                sdsclear(ctx->main_fast_buf);
-                attached = true;
-            }
-        }
-        if (!attached) {
-            struct sdschunk *main_fast_buf_chunk = make_sdschunk_steal(ctx->main_fast_buf);
-            list_push_back(&ctx->main_chunk_list, &main_fast_buf_chunk->elem);
-            ctx->main_fast_buf = sdsempty();
-        }
-    } 
+    flush_fast_buf(&ctx->main_fast_buf, &ctx->main_chunk_list);
 }
 
 
@@ -173,13 +163,7 @@ static inline void ctx_append_steal(struct namugen_ctx* ctx, sds s) {
     sdsfree(s);
 }
 
-static inline void inl_move_chunks(struct namuast_inline *dest, struct namuast_inline *src) {
-    inl_flush_fast_buf(dest);
-    inl_flush_fast_buf(src);
-
-    struct list* dest_chunk_list = &dest->chunk_list;
-    struct list* src_chunk_list = &src->chunk_list;
-
+static inline void merge_chunk_list(struct list* dest_chunk_list, struct list* src_chunk_list) {
     struct sdschunk* dest_back;
     if (list_empty(dest_chunk_list)) {
         dest_back = NULL;
@@ -188,7 +172,7 @@ static inline void inl_move_chunks(struct namuast_inline *dest, struct namuast_i
     }
     bool back_is_lazy = dest_back == NULL || dest_back->is_lazy;
     while (!list_empty(src_chunk_list)) {
-        struct sdschunk *src_chk = list_entry(list_pop_back(src_chunk_list), struct sdschunk, elem);
+        struct sdschunk *src_chk = list_entry(list_pop_front(src_chunk_list), struct sdschunk, elem);
         if (!back_is_lazy && !src_chk->is_lazy) {
             dest_back->buf = sdscatsds(dest_back->buf, src_chk->buf);
             remove_sdschunk(src_chk);
@@ -200,31 +184,16 @@ static inline void inl_move_chunks(struct namuast_inline *dest, struct namuast_i
     }
 }
 
+static inline void inl_move_chunks(struct namuast_inline *dest, struct namuast_inline *src) {
+    inl_flush_fast_buf(dest);
+    inl_flush_fast_buf(src);
+    merge_chunk_list(&dest->chunk_list, &src->chunk_list);
+}
+
 static inline void ctx_steal_chunks_from_inline(struct namugen_ctx* ctx, struct namuast_inline* inl) {
     ctx_flush_main_fast_buf(ctx);
     inl_flush_fast_buf(inl);
-
-    struct list* dest_chunk_list = &ctx->main_chunk_list;
-    struct list* src_chunk_list = &inl->chunk_list;
-
-    struct sdschunk* dest_back;
-    if (list_empty(dest_chunk_list)) {
-        dest_back = NULL;
-    } else {
-        dest_back = list_entry(list_back(dest_chunk_list), struct sdschunk, elem);
-    }
-    bool back_is_lazy = dest_back == NULL || dest_back->is_lazy;
-    while (!list_empty(src_chunk_list)) {
-        struct sdschunk *src_chk = list_entry(list_pop_back(src_chunk_list), struct sdschunk, elem);
-        if (!back_is_lazy && !src_chk->is_lazy) {
-            dest_back->buf = sdscatsds(dest_back->buf, src_chk->buf);
-            remove_sdschunk(src_chk);
-        } else {
-            list_push_back(dest_chunk_list, &src_chk->elem);
-            dest_back = src_chk;
-            back_is_lazy = src_chk->is_lazy;
-        }
-    }
+    merge_chunk_list(&ctx->main_chunk_list, &inl->chunk_list);
 }
 
 
