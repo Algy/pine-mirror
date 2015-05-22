@@ -536,7 +536,7 @@ void nm_emit_return(struct namugen_ctx* ctx) {
 }
 
 void nm_emit_hr(struct namugen_ctx* ctx, int hr_num) {
-    ctx_append_steal(ctx, sdscatprintf(sdsnewlen(NULL, 22), "<hr class=\"wiki-hr-%d\">", hr_num));
+    ctx_append_steal(ctx, sdscatprintf(sdsempty(), "<hr class=\"wiki-hr-%d\">", hr_num));
 }
 
 void nm_begin_footnote(struct namugen_ctx* ctx) {
