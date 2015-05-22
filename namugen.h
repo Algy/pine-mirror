@@ -81,7 +81,7 @@ struct namuast_list {
 
 struct namugen_ctx;
 
-const char* find_webcolor_by_name(char *name);
+char* find_webcolor_by_name(char *name);
 
 struct namuast_list* namuast_make_list(int type, struct namuast_inline* content);
 void namuast_remove_list(struct namuast_list* inl);
@@ -142,7 +142,7 @@ void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *secti
 void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section);
 void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias);
 void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char *height, int align);
-void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx);
+void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, char* fnt_literal, size_t len);
 
 /*
  * Namugen 
@@ -161,6 +161,13 @@ struct namugen_hook_itfc {
 
 #define MAX_TOC_COUNT 100
 #define INITIAL_MAIN_BUF (4096*4)
+
+struct sdschunk {
+    struct list_elem elem;
+    sds buf;
+    bool is_lazy;
+};
+
 struct namugen_ctx {
     bool is_in_footnote;
     int last_footnote_id;
@@ -169,10 +176,11 @@ struct namugen_ctx {
 
     struct heading* root_heading; // sentinel-heading
 
-    size_t toc_positions[MAX_TOC_COUNT];
+    struct sdschunk* toc_positions[MAX_TOC_COUNT];
     int toc_count;
 
-    sds main_buf;
+    struct list main_chunk_list;
+    sds main_fast_buf;
 
     struct namugen_doc_itfc *doc_itfc;
     struct namugen_hook_itfc *namugen_hook_itfc;

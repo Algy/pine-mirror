@@ -31,8 +31,8 @@
 
 
 struct webcolor_name {
-    const char *name;
-    const char *webcolor; // don't free me!
+    char *name;
+    char *webcolor; // don't free me!
 };
 
 // These webcolor names conforms to HTML5
@@ -181,7 +181,7 @@ struct webcolor_name webcolor_nametbl[] = {
     {NULL, NULL}
 };
 
-const char* find_webcolor_by_name(char *name) {
+char* find_webcolor_by_name(char *name) {
     struct webcolor_name *wnm;
     for (wnm = webcolor_nametbl; wnm->name; wnm++) {
         if (!strcasecmp(wnm->name, name)) {
@@ -1049,20 +1049,21 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                         extra = NULL;
                     } else
                         extra = dup_str(extra_st, extra_ed);
-                    char *fnt_end_p;
+                    char *fnt_st_p, *fnt_ed_p;
 
+                    fnt_st_p = p;
                     nm_begin_footnote(ctx);
-                    struct namuast_inline *footnote = parse_inline(p, border, &fnt_end_p, ctx);
+                    struct namuast_inline *footnote = parse_inline(p, border, &fnt_ed_p, ctx);
 
-                    if (!EQ(fnt_end_p - 1, border, ']')) {
+                    if (!EQ(fnt_ed_p - 1, border, ']')) {
                     // '[*' prefix pretented to be a footnote
                         namuast_remove_inline(footnote); 
                         if (extra) free(extra);
                         goto scan_literally;
                     }
                     int id = nm_register_footnote(ctx, footnote, extra);
-                    nm_inl_emit_footnote_mark(inl, id, ctx);
-                    p = fnt_end_p;
+                    nm_inl_emit_footnote_mark(inl, id, fnt_st_p, fnt_ed_p - 1 - fnt_st_p);
+                    p = fnt_ed_p;
                 } else {
                     // parse as link
                     char *testp = p;
@@ -1144,7 +1145,6 @@ static inline struct namuast_inline* parse_multiline(char *p, char* border, stru
     while (!MET_EOF(p, border)) {
         struct namuast_inline* next_inl = parse_inline(p, border, &p, ctx);
         nm_inl_cat(inl, next_inl, false);
-        namuast_remove_inline(next_inl);
 
         UNTIL_NOT_REACHING1(p, border, '\n') {
             p++;

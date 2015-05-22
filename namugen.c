@@ -1,5 +1,7 @@
+#include <stdio.h>
+#include <assert.h>
 #include "namugen.h"
-
+#include "escaper.inc"
 
 struct heading {
     struct namuast_inline *content;
@@ -25,13 +27,205 @@ struct fnt {
     struct list_elem elem;
 };
 
+
 struct namuast_inline {
     struct namugen_ctx *ctx;
-    sds buf;
+    struct list chunk_list;
+
+    sds fast_buf;
 };
 
 
-#include "escaper.inc"
+static struct sdschunk* make_lazy_sdschunk() {
+    struct sdschunk* chk = malloc(sizeof(struct sdschunk));
+    chk->buf = NULL;
+    chk->is_lazy = true;
+    return chk;
+}
+
+// steal buf
+static void set_lazy_sdschunk(struct sdschunk* chk, sds buf) {
+    assert(chk->is_lazy);
+    assert(chk->buf == NULL);
+    chk->buf = buf;
+    chk->is_lazy = false;
+}
+
+static struct sdschunk* make_sdschunk_steal(sds buf) {
+    struct sdschunk* chk = malloc(sizeof(struct sdschunk));
+    chk->buf = buf;
+    chk->is_lazy = false;
+    return chk;
+}
+
+static void remove_sdschunk(struct sdschunk* chk) {
+    if (chk->buf)
+        sdsfree(chk->buf);
+    free(chk);
+}
+
+static void remove_chunk_list(struct list *chunk_list) {
+    while (!list_empty(chunk_list)) {
+        struct sdschunk *chk = list_entry(list_pop_back(chunk_list), struct sdschunk, elem);
+        remove_sdschunk(chk);
+    }
+}
+
+static inline void inl_flush_fast_buf(struct namuast_inline *dest) {
+    if (sdslen(dest->fast_buf) > 0) {
+        bool attached = false;
+        if (!list_empty(&dest->chunk_list)) { 
+            struct sdschunk *back = list_entry(list_back(&dest->chunk_list), struct sdschunk, elem);
+            if (!back->is_lazy) {
+                back->buf = sdscatsds(back->buf, dest->fast_buf);
+                sdsclear(dest->fast_buf);
+                attached = true;
+            }
+        }
+        if (!attached) {
+            struct sdschunk *fast_buf_chunk = make_sdschunk_steal(dest->fast_buf);
+            list_push_back(&dest->chunk_list, &fast_buf_chunk->elem);
+            dest->fast_buf = sdsempty();
+        }
+    } 
+}
+
+static inline void ctx_flush_main_fast_buf(struct namugen_ctx* ctx) {
+    if (sdslen(ctx->main_fast_buf) > 0) {
+        bool attached = false;
+        if (!list_empty(&ctx->main_chunk_list)) { 
+            struct sdschunk *back = list_entry(list_back(&ctx->main_chunk_list), struct sdschunk, elem);
+            if (!back->is_lazy) {
+                back->buf = sdscatsds(back->buf, ctx->main_fast_buf);
+                sdsclear(ctx->main_fast_buf);
+                attached = true;
+            }
+        }
+        if (!attached) {
+            struct sdschunk *main_fast_buf_chunk = make_sdschunk_steal(ctx->main_fast_buf);
+            list_push_back(&ctx->main_chunk_list, &main_fast_buf_chunk->elem);
+            ctx->main_fast_buf = sdsempty();
+        }
+    } 
+}
+
+
+static inline struct sdschunk* inl_append_lazy_chunk(struct namuast_inline *inl) {
+    inl_flush_fast_buf(inl);
+    struct sdschunk* chk = make_lazy_sdschunk();
+    list_push_back(&inl->chunk_list, &chk->elem);
+    return chk;
+
+}
+
+static inline void inl_append(struct namuast_inline *inl, char* s) {
+    inl->fast_buf = sdscat(inl->fast_buf, s);
+
+}
+
+static inline void inl_append_steal(struct namuast_inline *inl, sds s) {
+    inl->fast_buf = sdscatsds(inl->fast_buf, s);
+    sdsfree(s);
+}
+
+static inline void inl_append_html_char_to_last(struct namuast_inline* inl, char c) {
+    inl->fast_buf = append_html_content_char(inl->fast_buf, c);
+
+}
+
+static inline void ctx_append(struct namugen_ctx* ctx, char* s) {
+    ctx->main_fast_buf = sdscat(ctx->main_fast_buf, s);
+
+}
+
+static inline void ctx_append_steal(struct namugen_ctx* ctx, sds s) {
+    ctx->main_fast_buf = sdscatsds(ctx->main_fast_buf, s);
+    sdsfree(s);
+}
+
+static inline void inl_move_chunks(struct namuast_inline *dest, struct namuast_inline *src) {
+    inl_flush_fast_buf(dest);
+    inl_flush_fast_buf(src);
+
+    struct list* dest_chunk_list = &dest->chunk_list;
+    struct list* src_chunk_list = &src->chunk_list;
+
+    struct sdschunk* dest_back;
+    if (list_empty(dest_chunk_list)) {
+        dest_back = NULL;
+    } else {
+        dest_back = list_entry(list_back(dest_chunk_list), struct sdschunk, elem);
+    }
+    bool back_is_lazy = dest_back == NULL || dest_back->is_lazy;
+    while (!list_empty(src_chunk_list)) {
+        struct sdschunk *src_chk = list_entry(list_pop_back(src_chunk_list), struct sdschunk, elem);
+        if (!back_is_lazy && !src_chk->is_lazy) {
+            dest_back->buf = sdscatsds(dest_back->buf, src_chk->buf);
+            remove_sdschunk(src_chk);
+        } else {
+            list_push_back(dest_chunk_list, &src_chk->elem);
+            dest_back = src_chk;
+            back_is_lazy = src_chk->is_lazy;
+        }
+    }
+}
+
+static inline void ctx_steal_chunks_from_inline(struct namugen_ctx* ctx, struct namuast_inline* inl) {
+    ctx_flush_main_fast_buf(ctx);
+    inl_flush_fast_buf(inl);
+
+    struct list* dest_chunk_list = &ctx->main_chunk_list;
+    struct list* src_chunk_list = &inl->chunk_list;
+
+    struct sdschunk* dest_back;
+    if (list_empty(dest_chunk_list)) {
+        dest_back = NULL;
+    } else {
+        dest_back = list_entry(list_back(dest_chunk_list), struct sdschunk, elem);
+    }
+    bool back_is_lazy = dest_back == NULL || dest_back->is_lazy;
+    while (!list_empty(src_chunk_list)) {
+        struct sdschunk *src_chk = list_entry(list_pop_back(src_chunk_list), struct sdschunk, elem);
+        if (!back_is_lazy && !src_chk->is_lazy) {
+            dest_back->buf = sdscatsds(dest_back->buf, src_chk->buf);
+            remove_sdschunk(src_chk);
+        } else {
+            list_push_back(dest_chunk_list, &src_chk->elem);
+            dest_back = src_chk;
+            back_is_lazy = src_chk->is_lazy;
+        }
+    }
+}
+
+
+static sds sdscat_chunk_list(sds dest, struct list* chunk_list) {
+    struct list_elem* e, *end;
+    size_t overall_size = 0;
+    for (e = list_begin(chunk_list); e != list_end(chunk_list); e = list_next(e)) {
+        struct sdschunk* chk = list_entry (e, struct sdschunk, elem);
+        if (chk->buf)
+            overall_size += sdslen(chk->buf);
+    }
+    dest = sdsMakeRoomFor(dest, overall_size);
+    char *p = dest + sdslen(dest);
+    end = list_end(chunk_list);
+    for (e = list_begin(chunk_list); e != end; e = list_next(e)) {
+        struct sdschunk* chk = list_entry (e, struct sdschunk, elem);
+        if (chk->buf) {
+            size_t chk_buf_len = sdslen(chk->buf);
+            memcpy(p, chk->buf, sizeof(char) * chk_buf_len);
+            p += chk_buf_len;
+        }
+    }
+    sdsIncrLen(dest, overall_size);
+    return dest;
+}
+static sds sdscat_inline(sds buf, struct namuast_inline* inl) {
+    buf = sdscat_chunk_list(buf, &inl->chunk_list);
+    buf = sdscatsds(buf, inl->fast_buf);
+    return buf;
+}
+
 
 // consume all arugments of type of sds given to this
 static sds generate_link(sds buf, bool exist, char *arg_href, char *section, char *title, char *pcontent, char* raw_content, char *extra_class, char *extra_attr) {
@@ -112,7 +306,6 @@ static void remove_fnt(struct fnt *fnt) {
 
 static void remove_fnt_list(struct list *fnt_list) {
     while (!list_empty(fnt_list)) {
-
         struct fnt *fnt = list_entry(list_pop_back(fnt_list), struct fnt, elem);
         remove_fnt(fnt);
     }
@@ -126,7 +319,10 @@ int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* content
     return fnt->id;
 }
 
-static void emit_fnt_item(struct namuast_inline* inl, struct fnt *fnt) {
+/*
+ * Side-effect: getting rid of fnt
+ */
+static inline void inl_steal_fnt_item(struct namuast_inline* inl, struct fnt *fnt) {
     sds id_def = sdscatprintf(sdsempty(), " id='fn-%d'", fnt->id);
     sds href = sdscatprintf(sdsempty(), "#rfn-%d", fnt->id);
 
@@ -139,36 +335,37 @@ static void emit_fnt_item(struct namuast_inline* inl, struct fnt *fnt) {
         mark = sdscatprintf(sdsempty(), "[%d]", fnt->repr.anon_num);
     }
 
-    sds inl_buf = inl->buf;
+    inl_append(inl, "<span class='footnote-list'>");
+    inl_append_steal(inl, generate_link(sdsempty(), true, href, NULL, "", NULL, mark, "wiki-fn-content", id_def));
+    inl_move_chunks(inl, fnt->content);
+    inl_append(inl, "</span>");
 
-    inl_buf = sdscat(inl_buf, "<span class='footnote-list'>");
-    inl_buf = generate_link(inl_buf, true, href, NULL, "", NULL, mark, "wiki-fn-content", id_def);
-    inl_buf = sdscatsds(inl_buf, fnt->content->buf);
-    inl_buf = sdscat(inl_buf, "</span>");
-
-    inl->buf = inl_buf;
     sdsfree(mark);
     sdsfree(id_def);
     sdsfree(href);
+    remove_fnt(fnt);
 }
 
 static void emit_fnt(struct namuast_inline *inl) {
-    inl->buf = sdscat(inl->buf, "<div class='wiki-macro-footnote'>");
+    inl_append(inl, "<div class='wiki-macro-footnote'>");
     struct list* fnt_list = &inl->ctx->fnt_list;
     while (!list_empty(fnt_list)) {
         struct fnt *fnt = list_entry(list_pop_front(fnt_list), struct fnt, elem);
-        emit_fnt_item(inl, fnt);
-        remove_fnt(fnt);
+        inl_steal_fnt_item(inl, fnt);
+        // `inl` stole `fnt`
     }
-    inl->buf = sdscat(inl->buf, "</div>");
+    inl_append(inl, "</div>");
 }
 
 static void emit_toc(struct namuast_inline *inl) {
     // lazy emission
     struct namugen_ctx *ctx = inl->ctx;
+    struct sdschunk* chk = inl_append_lazy_chunk(inl);
+
     if (ctx->toc_count < MAX_TOC_COUNT) {
-        ctx->toc_positions[ctx->toc_count++] = sdslen(ctx->main_buf);
-    }
+        ctx->toc_positions[ctx->toc_count++] = chk;
+    } else
+        remove_sdschunk(chk);
 }
 
 static sds dfs_toc(sds buf, struct heading* hd) {
@@ -176,7 +373,7 @@ static sds dfs_toc(sds buf, struct heading* hd) {
         // when it is not the root: sentinel node
         buf = sdscat(buf, "<span class='toc-item'>");
         buf = sdscatprintf(buf, "<a href='#s-%s'>%s</a>.", hd->section_name, hd->section_name);
-        buf = sdscatsds(buf, hd->content->buf);
+        buf = sdscat_inline(buf, hd->content);
         buf = sdscat(buf, "</span>");
     }
 
@@ -202,22 +399,11 @@ static sds get_toc_sds(struct heading *root) {
 static void do_emit_toc(struct namugen_ctx* ctx) {
     if (ctx->toc_count > 0) {
         sds toc_buf = get_toc_sds(ctx->root_heading);
-        size_t main_buf_len = sdslen(ctx->main_buf);
-        size_t total_len = ctx->toc_count * sdslen(toc_buf) + main_buf_len;
-        sds new_buf = sdsnewlen(NULL, total_len);
-        sdsupdatelen(new_buf);
-
         int idx;
-        size_t prev_position = 0;
         for (idx = 0; idx < ctx->toc_count; idx++) {
-            size_t pos = ctx->toc_positions[idx];
-            new_buf = sdscatlen(new_buf, ctx->main_buf + prev_position,  pos - prev_position);
-            new_buf = sdscatsds(new_buf, toc_buf);
-            prev_position = pos;
+            struct sdschunk* chk = ctx->toc_positions[idx];
+            set_lazy_sdschunk(chk, sdsdup(toc_buf));
         }
-        new_buf = sdscatlen(new_buf, ctx->main_buf + prev_position, main_buf_len - prev_position);
-        sdsfree(ctx->main_buf);
-        ctx->main_buf = new_buf;
         sdsfree(toc_buf);
         ctx->toc_count = 0;
     }
@@ -242,7 +428,16 @@ void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* 
     struct heading* hd = make_heading(p, content, h_num);
 
     sds section_name = hd->section_name; // borrowed
-    ctx->main_buf = sdscatprintf(ctx->main_buf, "<h%d><a class='wiki-heading' href='#toc' id='s-%s'>%s.</a>%s</h%d>", h_num, section_name, section_name, content->buf, h_num);
+
+    ctx_append_steal(ctx,
+            sdscatprintf(sdsempty(), 
+                "<h%d><a class='wiki-heading' href='#toc' id='s-%s'>%s</a>. ", 
+                h_num, section_name, section_name));
+
+    // Here, I don't own `content` object. Rather, heading container owns it. So I cannot steal content from it.
+    // Therefore, I should stringify it and use its string.
+    ctx_append_steal(ctx, sdscat_inline(sdsempty(), content));
+    ctx_append_steal(ctx, sdscatprintf(sdsempty(), "</h%d>", h_num));
 }
 
 static sds make_section_name(struct heading *hd) {
@@ -311,13 +506,19 @@ static char* align_to_str (enum nm_align_type t) {
 
 struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx) {
     struct namuast_inline *inl = malloc(sizeof(struct namuast_inline));
-    inl->buf = sdsempty();
     inl->ctx = ctx;
+    inl->fast_buf = sdsempty();
+    list_init(&inl->chunk_list);
     return inl;
 }
 
 void namuast_remove_inline(struct namuast_inline *inl) {
-    sdsfree(inl->buf);
+    struct list* chunk_list = &inl->chunk_list;
+    while (!list_empty(chunk_list)) {
+        struct sdschunk* chunk = list_entry(list_pop_back(chunk_list), struct sdschunk, elem);
+        remove_sdschunk(chunk);
+    }
+    sdsfree(inl->fast_buf);
     free(inl);
 }
 
@@ -326,16 +527,16 @@ struct nm_block_emitters block_emitter_ops_inline;
 struct nm_block_emitters block_emitter_ops_paragraphic;
 
 void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inline* inl) {
-    ctx->main_buf = sdscatsds(ctx->main_buf, inl->buf);
+    ctx_steal_chunks_from_inline(ctx, inl);
     namuast_remove_inline(inl);
 }
 
 void nm_emit_return(struct namugen_ctx* ctx) {
-    ctx->main_buf = sdscat(ctx->main_buf, "<br>");
+    ctx_append(ctx, "<br>");
 }
 
 void nm_emit_hr(struct namugen_ctx* ctx, int hr_num) {
-    ctx->main_buf = sdscatprintf(ctx->main_buf, "<hr class=\"wiki-hr-%d\">", hr_num);
+    ctx_append_steal(ctx, sdscatprintf(sdsnewlen(NULL, 22), "<hr class=\"wiki-hr-%d\">", hr_num));
 }
 
 void nm_begin_footnote(struct namugen_ctx* ctx) {
@@ -352,7 +553,9 @@ bool nm_in_footnote(struct namugen_ctx* ctx) {
 
 
 void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inline* inl) {
-    ctx->main_buf = sdscatprintf(ctx->main_buf, "<blockquote class=\"wiki-quote\">%s</blockquote>", inl->buf);
+    ctx_append(ctx, "<blockquote class=\"wiki-quote\">");
+    ctx_steal_chunks_from_inline(ctx, inl);
+    ctx_append(ctx, "</blockquote>");
     namuast_remove_inline(inl);
 }
 
@@ -387,8 +590,6 @@ static inline sds add_html_style(sds s, const char* key, char* value) {
 }
 
 void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
-    sds main_buf = ctx->main_buf;
-
     sds tbl_style = sdsempty();
     sds tbl_attr = sdsempty();
     sds tbl_caption = sdsempty();
@@ -407,7 +608,9 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
     }
 
     if (tbl->caption) {
-        tbl_caption = sdscatprintf(tbl_caption, "<caption>%s</caption>", tbl->caption->buf);
+        ctx_append(ctx, "<caption>");
+        ctx_steal_chunks_from_inline(ctx, tbl->caption);
+        ctx_append(ctx, "</caption>");
     } 
 
     tbl_style = add_html_style(tbl_style, "background-color", tbl->bg_webcolor);
@@ -416,27 +619,32 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
     tbl_attr = add_html_attr(tbl_attr, "bordercolor", tbl->border_webcolor);
     tbl_attr = add_html_attr(tbl_attr, "height", tbl->height);
 
-    main_buf = sdscatprintf(main_buf, 
-    "<div class='wiki-table-wrap'>"
-        "%s"
-        "<table class='%s' style='%s' %s>"
-            "<tbody>", 
-    tbl_caption, tbl_class, tbl_style, tbl_attr);
+    ctx_append(ctx, "<div class='wiki-table-wrap'>");
+        ctx_append_steal(ctx, tbl_caption);
+        ctx_append(ctx, "<table class='");
+            ctx_append_steal(ctx, tbl_class);
+        ctx_append(ctx, "' style='");
+            ctx_append_steal(ctx, tbl_style);
+        ctx_append(ctx, "' ");
+            ctx_append_steal(ctx, tbl_attr);
+        ctx_append(ctx, ">");
+
+        ctx_append(ctx, "<tbody>");
 
     int idx, kdx;
     for (idx = 0; idx < tbl->row_count; idx++) {
         struct namuast_table_row *row = &tbl->rows[idx];
-        sds row_attr = sdsempty();
+        sds row_head = sdsnew("<tr");
 
         if (row->bg_webcolor) {
-            row_attr = sdscat(row_attr, " style='background-color:"); 
+            row_head = sdscat(row_head, " style='background-color:"); 
             sds val = escape_html_attr(row->bg_webcolor);
-            row_attr = sdscatsds(row_attr, val); 
-            row_attr = sdscat(row_attr, "'"); 
+            row_head = sdscatsds(row_head, val); 
+            row_head = sdscat(row_head, "'"); 
             sdsfree(val);
         }
-
-        main_buf = sdscatprintf(main_buf, "<tr%s>", row_attr);
+        row_head = sdscat(row_head, ">");
+        ctx_append_steal(ctx, row_head);
         for (kdx = 0; kdx < row->col_count; kdx++) {
             struct namuast_table_cell *cell = &row->cols[kdx];
             sds cell_attr = sdsempty();
@@ -461,29 +669,31 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
             if (cell->valign != nm_valign_none)
                 cell_style = add_html_style(cell_style, "vertical-align", align_to_str(cell->valign));
             cell_style = add_html_style(cell_style, "background-color", cell->bg_webcolor);
-            main_buf = sdscatprintf(main_buf, "<td style='%s'%s>%s</td>", cell_style, cell_attr, cell->content->buf);
-            sdsfree(cell_attr);
-            sdsfree(cell_style);
-        }
 
-        main_buf = sdscat(main_buf, "</tr>");
-        sdsfree(row_attr);
+            ctx_append(ctx, "<td style='");
+                ctx_append_steal(ctx, cell_style);
+                ctx_append(ctx, "' ");
+                ctx_append_steal(ctx, cell_attr);
+            ctx_append(ctx, ">");
+                ctx_steal_chunks_from_inline(ctx, cell->content);
+            ctx_append(ctx, "</td>");
+        }
+        ctx_append(ctx, "</tr>");
     }
-    main_buf = sdscat(main_buf, 
+
+    ctx_append(ctx, 
             "</tbody>"
         "</table>"
     "</div>");
-    ctx->main_buf = main_buf;
-
-    sdsfree(tbl_style);
-    sdsfree(tbl_caption);
-    sdsfree(tbl_attr);
-    sdsfree(tbl_class);
 
     namuast_remove_table(tbl);
 }
 
-static sds emit_list_rec(sds main_buf, struct namuast_list* li) {
+/*
+ * Side-effects:
+ *   Note that `ctx` steals all content of `li` after a call for the sake of efficiency.
+ */
+static void emit_list_rec(struct namugen_ctx *ctx, struct namuast_list* li) {
     struct namuast_list* p;
 
     char *li_st_tag;
@@ -536,24 +746,23 @@ static sds emit_list_rec(sds main_buf, struct namuast_list* li) {
         ul_ed_tag = "</ol>";
     } 
 
-    main_buf = sdscat(main_buf, ul_st_tag);
+    // Don't free ul_st_tag. It's already stolen by ctx
+    ctx_append_steal(ctx, ul_st_tag);
     for (p = li; p; p = p->next) {
-        main_buf = sdscat(main_buf, li_st_tag);
-        main_buf = sdscatsds(main_buf, p->content->buf);
-        main_buf = sdscat(main_buf, li_ed_tag);
+        ctx_append(ctx, li_st_tag);
+        ctx_steal_chunks_from_inline(ctx, p->content);
+        ctx_append(ctx, li_ed_tag);
+
         if (p->sublist) {
-            main_buf = emit_list_rec(main_buf, p->sublist);
+            emit_list_rec(ctx, p->sublist);
         }
     }
-    main_buf = sdscat(main_buf, ul_ed_tag);
-    if (ul_st_tag)
-        sdsfree(ul_st_tag);
-    return main_buf;
+    ctx_append(ctx, ul_ed_tag);
 }
 
 
 void nm_emit_list(struct namugen_ctx* ctx, struct namuast_list* li) {
-    ctx->main_buf = emit_list_rec(ctx->main_buf, li);
+    emit_list_rec(ctx, li);
     namuast_remove_list(li);
 }
 
@@ -571,37 +780,56 @@ void nm_on_finish(struct namugen_ctx* ctx) {
 
 
 
-static char* span_type_to_str(enum nm_span_type type) { 
-    switch (type) {
-    case nm_span_bold:
-        return "b";
-    case nm_span_italic:
-        return "i";
-    case nm_span_strike:
-        return "del";
-    case nm_span_underline:
-        return "u";
-    case nm_span_superscript:
-        return "sup";
-    case nm_span_subscript:
-        return "sub";
-    default:
-        return "span";
+static char* span_type_to_str(enum nm_span_type type, bool opening_tag) { 
+    if (opening_tag) {
+        switch (type) {
+        case nm_span_bold:
+            return "<b>";
+        case nm_span_italic:
+            return "<i>";
+        case nm_span_strike:
+            return "<del>";
+        case nm_span_underline:
+            return "<u>";
+        case nm_span_superscript:
+            return "<sup>";
+        case nm_span_subscript:
+            return "<sub>";
+        default:
+            return "<span>";
+        }
+    } else {
+        switch (type) {
+        case nm_span_bold:
+            return "</b>";
+        case nm_span_italic:
+            return "</i>";
+        case nm_span_strike:
+            return "</del>";
+        case nm_span_underline:
+            return "</u>";
+        case nm_span_superscript:
+            return "</sup>";
+        case nm_span_subscript:
+            return "</sub>";
+        default:
+            return "</span>";
+        }
     }
 }
 
 void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type) {
     if (type != nm_span_none) {
-        char *span_str = span_type_to_str(type);
-        inl->buf = sdscatprintf(inl->buf, "<%s>", span_str);
-        inl->buf = sdscatsds(inl->buf, span->buf);
-        inl->buf = sdscatprintf(inl->buf, "</%s>", span_str);
+        inl_append(inl, span_type_to_str(type, true));
+        inl_move_chunks(inl, span);
+        inl_append(inl, span_type_to_str(type, false));
     }
     namuast_remove_inline(span);
 }
 
 void nm_inl_emit_char(struct namuast_inline* inl, char c) {
-    inl->buf = append_html_content_char(inl->buf, c);
+    // TODO: I need more efficient implementation
+    inl_append_html_char_to_last(inl, c);
 }
 
 void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section) {
@@ -611,7 +839,7 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
 
     if (!compatible_mode && !alias && !section) {
         if (!strcasecmp(link, "br")) {
-            inl->buf = sdscat(inl->buf, "<br>");
+            inl_append(inl, "<br>");
             goto cleanup;
         } else if (!strcmp(link, "\xeb\xaa\xa9\xec\xb0\xa8") || !strcasecmp(link, "tableofcontents")) {
             emit_toc(inl);
@@ -644,7 +872,7 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
     // main process
     bool exist = doc_itfc->doc_exists(doc_itfc, link);
     sds href = doc_itfc->doc_href(doc_itfc, link); 
-    inl->buf = generate_link(inl->buf, exist, href, section, link, alias? alias:link, NULL, "wiki-internal-link", NULL);
+    inl_append_steal(inl, generate_link(sdsempty(), exist, href, section, link, alias? alias:link, NULL, "wiki-internal-link", NULL));
     sdsfree(href);
 cleanup:
     if (link)
@@ -678,7 +906,7 @@ void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *secti
         href = NULL;
     }
 
-    inl->buf = generate_link(inl->buf, exist, href? href : "", section, upper_doc_name? upper_doc_name : "../", alias? alias : (upper_doc_name? upper_doc_name : "../"), NULL, "wiki-internal-link", NULL);
+    inl_append_steal(inl, generate_link(sdsempty(), exist, href? href : "", section, upper_doc_name? upper_doc_name : "../", alias? alias : (upper_doc_name? upper_doc_name : "../"), NULL, "wiki-internal-link", NULL));
     if (href)
         sdsfree(href);
     if (upper_doc_name)
@@ -697,7 +925,7 @@ void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias,
 
     sds href = doc_itfc->doc_href(doc_itfc, docname); 
     bool exist = doc_itfc->doc_exists(doc_itfc, docname);
-    inl->buf = generate_link(inl->buf, exist, href, section, link, alias? alias : link, NULL, "wiki-internal-link", NULL);
+    inl_append_steal(inl, generate_link(sdsempty(), exist, href, section, link, alias? alias : link, NULL, "wiki-internal-link", NULL));
 
     sdsfree(docname);
     sdsfree(href);
@@ -710,7 +938,7 @@ void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias,
 }
 
 void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias) {
-    inl->buf = generate_link(inl->buf, true, link, NULL, "", alias? alias : link, NULL, "wiki-extenral-link", " target='_blank'");
+    inl_append_steal(inl, generate_link(sdsempty(), true, link, NULL, "", alias? alias : link, NULL, "wiki-extenral-link", " target='_blank'"));
     if (link)
         free(link);
     if (alias)
@@ -733,10 +961,8 @@ void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char 
         image = sdscat(image, align_repr);
     }
     image = sdscat(image, ">");
-    inl->buf = sdscatsds(inl->buf, image);
+    inl_append_steal(inl, image);
 
-
-    sdsfree(image);
     sdsfree(src);
     if (url)
         free(url);
@@ -746,15 +972,20 @@ void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char 
         free(height);
 }
 
+// This function steal the ownership of inl_src
 void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) {
-    if (insert_br)
-        inl_dest->buf = sdscat(inl_dest->buf, "<br>");
-    if (inl_src)
-        inl_dest->buf = sdscatsds(inl_dest->buf, inl_src->buf);
+    if (insert_br) {
+        inl_append(inl_dest, "<br>");
+    }
+    if (inl_src) {
+        inl_move_chunks(inl_dest, inl_src);
+        namuast_remove_inline(inl_src);
+    }
 }
 
-void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namugen_ctx *ctx) {
-    struct fnt* fnt = get_footnote_by_id(ctx, id);
+// borrow fnt_literal
+void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, char* fnt_literal, size_t len) {
+    struct fnt* fnt = get_footnote_by_id(inl->ctx, id);
     if (!fnt) return;
 
     sds id_def = sdscatprintf(sdsempty(), "id='rfn-%d'", id);
@@ -768,14 +999,19 @@ void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, struct namuge
     } else
         mark = sdscatprintf(sdsempty(), "[%d]", fnt->repr.anon_num);
 
-    inl->buf = generate_link(inl->buf, true, href, NULL, fnt->content->buf, NULL, mark, "wiki-rfn-content", id_def);
+    sds literal = sdsnewlen(fnt_literal, len);
+    inl_append_steal(inl, generate_link(sdsempty(), true, href, NULL, literal, NULL, mark, "wiki-rfn-content", id_def));
+
     sdsfree(mark);
+    sdsfree(literal);
     sdsfree(id_def);
     sdsfree(href);
 }
 
 static bool p_emit_raw(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* raw) {
-    ctx->main_buf = sdscatprintf(ctx->main_buf, "<pre>%s</pre>", raw);
+    ctx_append(ctx, "<pre>");
+    ctx_append_steal(ctx, escape_html_content(raw));
+    ctx_append(ctx, "</pre>");
     free(raw);
     return true;
 }
@@ -787,22 +1023,36 @@ static bool p_emit_html(struct namugen_ctx* ctx, struct namuast_inline* outer_in
 }
 
 static bool i_emit_raw(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* raw) {
-    outer_inl->buf = sdscatprintf(outer_inl->buf, "<code>%s</code>", raw);
+    inl_append(outer_inl, "<code>");
+    inl_append_steal(outer_inl, escape_html_content(raw));
+    inl_append(outer_inl, "</code>");
     free(raw);
     return true;
 }
 
 static bool i_emit_highlighted_block(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, int level) {
-    outer_inl->buf = sdscatprintf(outer_inl->buf, "<span class='wiki-size size-%d'>%s</span>", level, content->buf);
+    char numstr[8];
+    inl_append(outer_inl, "<span class='wiki-size size-");
+    snprintf(numstr, 7, "%d", level);
+    inl_append(outer_inl, numstr);
+    inl_append(outer_inl, "'>");
+    inl_move_chunks(outer_inl, content);
+    inl_append(outer_inl, "</span>");
     namuast_remove_inline(content);
     return true;
 }
 
 static bool i_emit_colored_block(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, char* webcolor) {
     sds escaped_color = escape_html_attr(webcolor);
-    outer_inl->buf = sdscatprintf(outer_inl->buf, "<span class='wiki-color' style='color: %s'>%s</span>", escaped_color, content->buf);
+
+    inl_append(outer_inl, "<span class='wiki-color' style='color: ");
+    inl_append(outer_inl, "<span class='wiki-color' style='color: ");
+    inl_append_steal(outer_inl, escaped_color);
+    inl_append(outer_inl, "'>");
+    inl_move_chunks(outer_inl, content);
+    inl_append(outer_inl, "</span>");
     namuast_remove_inline(content);
-    sdsfree(escaped_color);
+
     free(webcolor);
     return true;
 }
@@ -830,27 +1080,30 @@ struct namugen_ctx* namugen_make_ctx(char* cur_doc_name, struct namugen_doc_itfc
     ctx->last_footnote_id = 0;
     ctx->last_anon_fnt_num = 0;
     list_init(&ctx->fnt_list);
+    list_init(&ctx->main_chunk_list);
     ctx->root_heading = make_heading(NULL, NULL, 0);
     ctx->last_anon_fnt_num = 0;
     ctx->toc_count = 0;
+    ctx->main_fast_buf = sdsempty();
     ctx->cur_doc_name = sdsnew(cur_doc_name);
 
-    ctx->main_buf = sdsnewlen(NULL, INITIAL_MAIN_BUF);
-    sdsupdatelen(ctx->main_buf);
     return ctx;
 }
 
 sds namugen_ctx_flush_main_buf(struct namugen_ctx* ctx) {
-    sds ret = ctx->main_buf;
-    ctx->main_buf = NULL;
+    struct list_elem *e;
+    sds ret = sdscat_chunk_list(sdsempty(), &ctx->main_chunk_list);
+    ret = sdscatsds(ret, ctx->main_fast_buf);
+    remove_chunk_list(&ctx->main_chunk_list);
+    sdsclear(ctx->main_fast_buf);
     return ret;
 }
 
 void namugen_remove_ctx(struct namugen_ctx* ctx) {
-    if (ctx->main_buf)
-        sdsfree(ctx->main_buf);
+    remove_chunk_list(&ctx->main_chunk_list);
     remove_fnt_list(&ctx->fnt_list);
     remove_heading(ctx->root_heading);
     sdsfree(ctx->cur_doc_name);
+    sdsfree(ctx->main_fast_buf);
     free(ctx);
 }
