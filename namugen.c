@@ -2,6 +2,7 @@
 #include <assert.h>
 #include "namugen.h"
 #include "escaper.inc"
+#define SAFELY_SDS_FREE(expr) if (expr) sdsfree(expr); expr = NULL;
 
 struct heading {
     struct namuast_inline *content;
@@ -35,6 +36,35 @@ struct namuast_inline {
     sds fast_buf;
 };
 
+struct _internal_link_slot {
+    struct list_elem elem;
+
+    sds href;
+    sds section;
+    sds link;
+    sds alias;
+
+    struct sdschunk *chunk;
+};
+
+static struct _internal_link_slot* _make_internal_link(sds href, sds section, sds link, sds alias, struct sdschunk *chunk) {
+    struct _internal_link_slot *slot = malloc(sizeof(struct _internal_link_slot));
+    slot->href = href;
+    slot->section = section;
+    slot->link = link;
+    slot->alias = alias;
+    slot->chunk = chunk;
+    return slot;
+}
+
+static void _remove_internal_link(struct _internal_link_slot *slot) {
+    SAFELY_SDS_FREE(slot->href);
+    SAFELY_SDS_FREE(slot->section);
+    SAFELY_SDS_FREE(slot->link);
+    SAFELY_SDS_FREE(slot->alias);
+    free(slot);
+}
+
 
 static struct sdschunk* make_lazy_sdschunk() {
     struct sdschunk* chk = malloc(sizeof(struct sdschunk));
@@ -44,7 +74,7 @@ static struct sdschunk* make_lazy_sdschunk() {
 }
 
 // steal buf
-static void set_lazy_sdschunk(struct sdschunk* chk, sds buf) {
+static void fill_lazy_sdschunk(struct sdschunk* chk, sds buf) {
     assert(chk->is_lazy);
     assert(chk->buf == NULL);
     chk->buf = buf;
@@ -402,7 +432,7 @@ static void do_emit_toc(struct namugen_ctx* ctx) {
         int idx;
         for (idx = 0; idx < ctx->toc_count; idx++) {
             struct sdschunk* chk = ctx->toc_positions[idx];
-            set_lazy_sdschunk(chk, sdsdup(toc_buf));
+            fill_lazy_sdschunk(chk, sdsdup(toc_buf));
         }
         sdsfree(toc_buf);
         ctx->toc_count = 0;
@@ -772,10 +802,48 @@ void nm_on_start(struct namugen_ctx* ctx) {
 void nm_on_finish(struct namugen_ctx* ctx) {
     struct namuast_inline *inl = namuast_make_inline(ctx);
     emit_fnt(inl);
+
     // no need to remove inl cuz nm_ prefixed functions always deal with it.
     nm_emit_inline(ctx, inl);
-    
     do_emit_toc(ctx);
+
+    // Now connect internal links altogether
+    int argc = ctx->internal_link_count;
+    char *docnames[argc];
+    struct _internal_link_slot *slots[argc];
+    bool existencies[argc];
+
+    int idx = 0;
+    struct list_elem* e;
+    struct list* internal_link_list = &ctx->internal_link_list;
+    for (e = list_begin(internal_link_list); e != list_end(internal_link_list); e = list_next(e)) {
+        struct _internal_link_slot *slot = list_entry(e, struct _internal_link_slot, elem);
+        slots[idx] = slot;
+        docnames[idx] = slot->link;
+        idx++;
+    }
+    ctx->doc_itfc->documents_exist(ctx->doc_itfc, argc, docnames, existencies);
+
+    idx = 0;
+    while (!list_empty(internal_link_list)) {
+        struct _internal_link_slot *slot = list_entry(
+                list_pop_front(internal_link_list), 
+                struct _internal_link_slot, 
+                elem
+        );
+        fill_lazy_sdschunk(slot->chunk, 
+                generate_link(sdsempty(), 
+                    existencies[idx], 
+                    slot->href, 
+                    slot->section, 
+                    slot->link, 
+                    slot->alias? slot->alias:slot->link, 
+                    NULL, 
+                    "wiki-internal-link", 
+                    NULL)
+        );
+        _remove_internal_link(slot);
+    }
 }
 
 
@@ -870,10 +938,18 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
         }
     }
     // main process
-    bool exist = doc_itfc->doc_exists(doc_itfc, link);
     sds href = doc_itfc->doc_href(doc_itfc, link); 
-    inl_append_steal(inl, generate_link(sdsempty(), exist, href, section, link, alias? alias:link, NULL, "wiki-internal-link", NULL));
-    sdsfree(href);
+
+    sds sds_section = NULL;
+    sds sds_link = NULL;
+    sds sds_alias = NULL;
+    if (section) sds_section = sdsnew(section);
+    if (link) sds_link = sdsnew(link);
+    if (sds_alias) sds_alias = sdsnew(alias);
+
+    struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, sds_alias, inl_append_lazy_chunk(inl));
+    list_push_back(&ctx->internal_link_list, &slot->elem);
+    ctx->internal_link_count++;
 cleanup:
     if (link)
         free(link);
@@ -898,7 +974,7 @@ void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *secti
     sds upper_doc_name, href;
     if (sep) {
         upper_doc_name = sdsnewlen(cur_doc_name, sep - cur_doc_name);
-        exist = doc_itfc->doc_exists(doc_itfc, upper_doc_name);
+        doc_itfc->documents_exist(doc_itfc, 1, &upper_doc_name, &exist);
         href = doc_itfc->doc_href(doc_itfc, upper_doc_name);
     } else {
         upper_doc_name = NULL;
@@ -924,7 +1000,8 @@ void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias,
     sds docname = sdsjoin(argv, 2, "/", 1);
 
     sds href = doc_itfc->doc_href(doc_itfc, docname); 
-    bool exist = doc_itfc->doc_exists(doc_itfc, docname);
+    bool exist;
+    doc_itfc->documents_exist(doc_itfc, 1, &docname, &exist);
     inl_append_steal(inl, generate_link(sdsempty(), exist, href, section, link, alias? alias : link, NULL, "wiki-internal-link", NULL));
 
     sdsfree(docname);
@@ -1081,6 +1158,8 @@ struct namugen_ctx* namugen_make_ctx(char* cur_doc_name, struct namugen_doc_itfc
     ctx->last_anon_fnt_num = 0;
     list_init(&ctx->fnt_list);
     list_init(&ctx->main_chunk_list);
+    list_init(&ctx->internal_link_list);
+    ctx->internal_link_count = 0;
     ctx->root_heading = make_heading(NULL, NULL, 0);
     ctx->last_anon_fnt_num = 0;
     ctx->toc_count = 0;
@@ -1099,10 +1178,14 @@ sds namugen_ctx_flush_main_buf(struct namugen_ctx* ctx) {
     return ret;
 }
 
+
 void namugen_remove_ctx(struct namugen_ctx* ctx) {
     remove_chunk_list(&ctx->main_chunk_list);
     remove_fnt_list(&ctx->fnt_list);
     remove_heading(ctx->root_heading);
+    while (!list_empty(&ctx->internal_link_list)) {
+        _remove_internal_link(list_entry(list_pop_back(&ctx->internal_link_list), struct _internal_link_slot, elem));
+    }
     sdsfree(ctx->cur_doc_name);
     sdsfree(ctx->main_fast_buf);
     free(ctx);

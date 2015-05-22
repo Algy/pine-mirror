@@ -5,15 +5,19 @@
 
 #include "namugen.h"
 
-bool doc_exists(struct namugen_doc_itfc* x, char* doc_name) {
-    return false;
+void dummy_docs_exist(struct namugen_doc_itfc* x, int argc, char** docnames, bool* results) {
+    int idx;
+    for (idx = 0; idx < argc; idx++) {
+        results[idx] = false;
+    }
 }
 
 #include "escaper.inc"
 sds doc_href(struct namugen_doc_itfc* x, char* doc_name) {
     sds val = escape_html_attr(doc_name);
 
-    sds ret = sdsnew("/wiki/");
+    sds ret = sdsnew("/wiki/page/");
+    // TODO: url escaping here
     ret = sdscatsds(ret, val);
     sdsfree(val);
     return ret;
@@ -24,7 +28,7 @@ bool say_no() {
 }
 
 struct namugen_doc_itfc doc_itfc = {
-    .doc_exists = doc_exists,
+    .documents_exist = dummy_docs_exist,
     .doc_href = doc_href
 };
 
@@ -58,7 +62,7 @@ int main(int argc, char** argv) {
     double us = (((double) (clock_ed - clock_st)) / CLOCKS_PER_SEC) * 1000. * 1000.;
 
     sds result = namugen_ctx_flush_main_buf(ctx);
-    printf("<!doctype html><meta charset='utf-8'>%s\n", result);
+    printf("<!doctype html><meta charset='utf-8'><link ref='stylesheet' href='https://namu.wiki/css/wiki.css?1430916909'> <div class='wiki-main'><article>%s</article></div>\n", result);
     sdsfree(result);
     printf("generated in %.2lf us\n", us);
     namugen_remove_ctx(ctx);
