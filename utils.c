@@ -139,7 +139,8 @@ void pr_init(PineRequest* req) {
 }
 
 static void PineRequestStrings_remove(PineRequestStrings *strs) {
-    for (sds* s = (sds *)strs; *s != (sds)-1; s++) {
+    sds* s;
+    for (s = (sds *)strs; *s != (sds)-1; s++) {
         SAFELY_SDSFREE(*s);
     }
 }
