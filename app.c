@@ -4,9 +4,8 @@
 #include "pine.h"
 #include "data.h"
 #include "hiredis/hiredis.h"
-// #include "data.h"
-//
-//
+#include "namugen.h"
+
 #define mysql_fatal(mysql) do {\
     uwsgi_log("(MYSQL)%s at [%s:%d]\n", mysql_error(mysql), __FILE__, __LINE__); \
     abort(); \
@@ -42,9 +41,82 @@ static bool prefix(char* s, char* pattern, char** p_out) {
     }
 }
 
+static bool say_no() {
+    return false;
+}
+
+typedef struct {
+    struct namugen_doc_itfc vtbl;
+    ConnCtx *conn;
+    char* docname_prefix;
+} NormalNamugenDocumentInterface;
+
+struct namugen_hook_itfc todo_hook = {
+    .hook_fn_link = say_no,
+    .hook_fn_call = say_no
+};
+
+
+#include "escaper.inc"
+static sds nmdi_doc_href(struct namugen_doc_itfc* x, char* doc_name) {
+    NormalNamugenDocumentInterface *nmdi = (NormalNamugenDocumentInterface *)x;
+    sds chunk = escape_url_chunk(doc_name, false);
+    sds ret = sdsnew(nmdi->docname_prefix);
+    ret = sdscatsds(ret, chunk);
+    sdsfree(chunk);
+    return ret;
+}
+static int ok_put_plain(PineRequest *req, sds html) {
+    GUARD(pr_prepare(req, 200, NULL));
+    GUARD(pr_add_content_type(req, "text/plain; charset=utf-8"));
+    GUARD(pr_write(req, html, sdslen(html)));
+    return PINE_OK;
+}
+
+static int ok_put_html(PineRequest *req, sds html) {
+    GUARD(pr_prepare(req, 200, NULL));
+    GUARD(pr_add_content_type(req, "text/html; charset=utf-8"));
+    GUARD(pr_write(req, html, sdslen(html)));
+    return PINE_OK;
+}
+
+static void nmdi_docs_exist(struct namugen_doc_itfc* x, int argc, char** docnames, bool* results) {
+    NormalNamugenDocumentInterface *nmdi = (NormalNamugenDocumentInterface *)x;
+    documents_exist(nmdi->conn, argc, docnames, results);
+}
+
+struct namugen_doc_itfc nmdi_vtbl = {
+    .documents_exist = nmdi_docs_exist,
+    .doc_href = nmdi_doc_href
+};
+
+static sds render_page(ConnCtx *ctx, Document *doc, char *docname_prefix) {
+    if (!docname_prefix)
+        docname_prefix = "/wiki/page/";
+    NormalNamugenDocumentInterface my_itfc = {
+       .vtbl = nmdi_vtbl,
+       .conn = ctx,
+       .docname_prefix = docname_prefix
+    };
+
+    struct namugen_ctx* namugen = namugen_make_ctx(doc->name, &my_itfc.vtbl, &todo_hook);
+    clock_t clock_st = clock();
+    namugen_scan(namugen, doc->source, sdslen(doc->source));
+    clock_t clock_ed = clock();
+    double ms = (((double) (clock_ed - clock_st)) / CLOCKS_PER_SEC) * 1000.;
+
+    sds result = namugen_ctx_flush_main_buf(namugen);
+    result = sdscatprintf(result, "<p class='gen-ms'>generated in %.2lfms</p>", ms);
+    namugen_remove_ctx(namugen);
+    return result;
+}
+
 #define RAW_PAGE_PREFIX "/wiki/raw/"
-int pine_main (PineRequest *req) {
-    ((CoreData *)CORE_DATA(req))->conn.req = req;
+#define RENDERED_PAGE_PREFIX "/wiki/rendered/"
+#define WIKI_PAGE_PREFIX "/wiki/page/"
+int pine_main(PineRequest *req) {
+    ConnCtx *conn = &((CoreData *)CORE_DATA(req))->conn;
+    conn->req = req;
 
     sds path = req->env.path;
     char *suffix;
@@ -55,12 +127,22 @@ int pine_main (PineRequest *req) {
         RAII_SDS sds docname = sdsnew(suffix);
         RAII_Document Document doc;
         Document_init(&doc);
-        if (!find_document(&((CoreData *)CORE_DATA(req))->conn, docname, &doc)) {
+        if (!find_document(conn, docname, &doc)) {
             goto not_found;
         }
-        GUARD(pr_prepare(req, 200, NULL));
-        GUARD(pr_add_content_type(req, "text/plain; charset=utf-8"));
-        GUARD(pr_write(req, doc.source, sdslen(doc.source)));
+        return ok_put_plain(req, doc.source);
+    } else if (prefix(path, RENDERED_PAGE_PREFIX, &suffix)) {
+        if (strstr(suffix, "/")) {
+            goto bad_request;
+        }
+        RAII_SDS sds docname = sdsnew(suffix);
+        RAII_Document Document doc;
+        Document_init(&doc);
+        if (!find_document(conn, docname, &doc)) {
+            goto not_found;
+        }
+        RAII_SDS sds page = render_page(conn, &doc, RENDERED_PAGE_PREFIX);
+        return ok_put_html(req, page);
     } else {
         goto not_found;
     }

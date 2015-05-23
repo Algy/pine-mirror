@@ -266,10 +266,10 @@ struct namuast_table* namuast_make_table() {
 }
 
 void namuast_remove_table(struct namuast_table* table) {
-    int row_idx;
+    size_t row_idx;
     for (row_idx = 0; row_idx < table->row_count; row_idx++) {
         struct namuast_table_row *row = &table->rows[row_idx];
-        int col_idx;
+        size_t col_idx;
         for (col_idx = 0; col_idx < row->col_count; col_idx++) {
             struct namuast_table_cell *cell = &row->cols[col_idx];
             if (cell->content) {
@@ -337,12 +337,13 @@ void namuast_remove_table(struct namuast_table* table) {
 #define CASEPREFIXSTR(p, border, prefix) (!strncasecmp((p), (prefix), strlen(prefix)))
 
 static char* dup_str(char *st, char *ed) {
-    char *retval = calloc(ed - st + 1, 1);
+    char *retval = calloc(ed - st + 1, sizeof(char));
     memcpy(retval, st, ed - st);
     return retval;
 }
 
 
+/*
 typedef struct {
     char *tagname; // may be NULL
     size_t keyvalue_count;
@@ -350,6 +351,7 @@ typedef struct {
     char **values; // may be NULL only if keyvalue_count is 0
     char *after_pipe; // may be NULL
 } celltag;
+*/
 
 /*
 static inline celltag* parse_xml_like_tag_content(char *p, char *border, char** p_out) {
@@ -398,8 +400,8 @@ static inline celltag* parse_xml_like_tag_content(char *p, char *border, char** 
 TODO
 */
 
+/*
 static void remove_celltag(celltag *tag) {
-    /*
     int idx;
     if (tag->tagname) free(tag->tagname);
     if (celltag->keys) {
@@ -412,8 +414,8 @@ static void remove_celltag(celltag *tag) {
     if (tag->values) free(tag->values);
     if (tag->after_pipe) free(tag->after_pipe);
     TODO
-    */
 }
+*/
 
 static inline void table_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, bool is_first, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
     /*
@@ -656,7 +658,7 @@ static inline char* unescape_link(char *s) {
     char *p;
     char *ret;
     char *ret_p;
-    ret = ret_p = calloc(strlen(s) + 1, 1);
+    ret = ret_p = calloc(strlen(s) + 1, sizeof(char));
     for (p = s; *p; ) {
         if (*p == '\\' && *(p + 1)) {
             switch (*(p + 1)) {
@@ -847,8 +849,6 @@ static inline bool parse_list_header (char *p, char *border, char **content_st_o
 
 
 static inline struct namuast_inline* parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx) {
-    int cur_span_type = nm_span_none;
-
     struct namuast_inline *inl = namuast_make_inline(ctx);
     UNTIL_REACHING1(p, border, '\n') {
         switch (*p) {

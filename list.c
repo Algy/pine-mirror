@@ -333,6 +333,8 @@ swap (struct list_elem **a, struct list_elem **b)
 }
 
 /* Reverses the order of LIST. */
+/*
+ * See header file.
 void
 list_reverse (struct list *list)
 {
@@ -346,6 +348,7 @@ list_reverse (struct list *list)
       swap (&list->head.next->prev, &list->tail.prev->next);
     }
 }
+*/
 
 /* Returns true only if the list elements A through B (exclusive)
    are in order according to LESS given auxiliary data AUX. */

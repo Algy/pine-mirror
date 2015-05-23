@@ -630,7 +630,7 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl) {
 
         ctx_append(ctx, "<tbody>");
 
-    int idx, kdx;
+    size_t idx, kdx;
     for (idx = 0; idx < tbl->row_count; idx++) {
         struct namuast_table_row *row = &tbl->rows[idx];
         sds row_head = sdsnew("<tr");
@@ -1139,7 +1139,6 @@ struct namugen_ctx* namugen_make_ctx(char* cur_doc_name, struct namugen_doc_itfc
 }
 
 sds namugen_ctx_flush_main_buf(struct namugen_ctx* ctx) {
-    struct list_elem *e;
     sds ret = sdscat_chunk_list(sdsempty(), &ctx->main_chunk_list);
     ret = sdscatsds(ret, ctx->main_fast_buf);
     remove_chunk_list(&ctx->main_chunk_list);

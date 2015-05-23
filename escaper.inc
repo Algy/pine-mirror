@@ -7,7 +7,7 @@
 #ifndef NULL
 #  define NULL ((void *)0)
 #endif
-static sds escape_html_content(char* content) {
+static __attribute__((unused)) sds escape_html_content(char* content) {
     size_t len = strlen(content);
     sds ret = sdsnewlen(NULL, len + len / 2);
     sdsupdatelen(ret);
@@ -52,7 +52,7 @@ static sds escape_html_content(char* content) {
     return ret;
 }
 
-static inline sds append_html_content_char(sds appendee, char ch) {
+static inline __attribute__((unused)) sds append_html_content_char(sds appendee, char ch) {
     char *esc_entity = NULL;
     switch (ch) {
     case '&':
@@ -81,7 +81,7 @@ static inline sds append_html_content_char(sds appendee, char ch) {
 }
 
 
-static sds escape_html_attr(char* attr) {
+static __attribute__((unused)) sds escape_html_attr(char* attr) {
     sds ret = sdsnewlen(NULL, strlen(attr) * 2);
     sdsupdatelen(ret);
     char *p;
@@ -113,7 +113,7 @@ static sds escape_html_attr(char* attr) {
 }
 
 #define __TO_HEX__(x) (((x) >= 10)? (((x) - 10) + 'A'):((x) + '0'))
-static sds escape_url_chunk(char* chunk, bool plus_used_as_space) {
+static __attribute__((unused)) sds escape_url_chunk(char* chunk, bool plus_used_as_space) {
     char *p;
     sds result = sdsempty();
     for (p = chunk; *p; p++) {
