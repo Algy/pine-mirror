@@ -1091,7 +1091,6 @@ static bool i_emit_colored_block(struct namugen_ctx* ctx, struct namuast_inline*
     sds escaped_color = escape_html_attr(webcolor);
 
     inl_append(outer_inl, "<span class='wiki-color' style='color: ");
-    inl_append(outer_inl, "<span class='wiki-color' style='color: ");
     inl_append_steal(outer_inl, escaped_color);
     inl_append(outer_inl, "'>");
     inl_move_chunks(outer_inl, content);
