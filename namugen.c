@@ -913,7 +913,7 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
     sds sds_alias = NULL;
     if (section) sds_section = sdsnew(section);
     if (link) sds_link = sdsnew(link);
-    if (sds_alias) sds_alias = sdsnew(alias);
+    if (alias) sds_alias = sdsnew(alias);
 
     struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, sds_alias, inl_append_lazy_chunk(inl));
     list_push_back(&ctx->internal_link_list, &slot->elem);
