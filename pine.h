@@ -1,5 +1,6 @@
 #ifndef _PINE_H
 # define _PINE_H
+#include <stdbool.h>
 #include <setjmp.h>
 
 #include "uwsgi.h"
