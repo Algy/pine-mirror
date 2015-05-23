@@ -810,6 +810,7 @@ void nm_on_finish(struct namugen_ctx* ctx) {
                     NULL)
         );
         _remove_internal_link(slot);
+        idx++;
     }
 }
 

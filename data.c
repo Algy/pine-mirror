@@ -301,9 +301,7 @@ void documents_exist(ConnCtx *ctx, int argc, char** docnames, bool *result) {
         qsort(existing_rows, existing_row_cnt, sizeof(sds), _p_sdscmp);
 
         for (idx = 0; idx < slot_cnt; idx++) {
-            if (bsearch(&slots[idx].docname, existing_rows, existing_row_cnt, sizeof(sds), _p_strcmp)) {
-                *slots[idx].result_box = true;
-            }
+            *slots[idx].result_box = bsearch(&slots[idx].docname, existing_rows, existing_row_cnt, sizeof(sds), _p_strcmp) != NULL;
         }
 
         for (idx = 0; idx < existing_row_cnt; idx++) {
