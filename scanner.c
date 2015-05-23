@@ -467,8 +467,8 @@ static inline bool parse_table_cell(char *p, char *border, char **p_out, int *co
         if (!MET_EOF(testp, border)) {
             cell_ctrl_start_p = _tmp_st_p;
             cell_ctrl_end_p = testp;
+            testp++; // consume '>'
         }
-        testp++; // consume '>'
     }
     CONSUME_WHITESPACE(testp, border);
 
@@ -974,10 +974,10 @@ static inline struct namuast_inline* parse_inline(char *p, char* border, char **
                 testp += 3;
 
                 char *content_st = testp;
-                while (!MET_EOF(testp + 3, border) && *testp != '\n' && !(*(testp + 2) == span_mark && *(testp + 1) == span_mark && *testp == span_mark)) {
+                while (!MET_EOF(testp + 2, border) && *testp != '\n' && !(*(testp + 2) == span_mark && *(testp + 1) == span_mark && *testp == span_mark)) {
                     testp++;
                 }
-                if (MET_EOF(testp + 3, border) || *testp == '\n')
+                if (MET_EOF(testp + 2, border) || *testp == '\n')
                     goto scan_literally;
                 char *content_ed = testp;
                 testp += 3;
