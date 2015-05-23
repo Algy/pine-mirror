@@ -1178,7 +1178,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             CONSUME_SPACETAB(testp, border);
 
             char *content_start_p = testp;
-            char *content_end_p;
+            char *content_end_p = NULL;
             int cls_num = 0;
             UNTIL_REACHING1(testp, border, '\n') {
                 cls_num = 0;
