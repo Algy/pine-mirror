@@ -40,27 +40,39 @@ static long long get_epoch() {
 
 
 #define MYSQL_ASYNC(ctx, start, cont) do { \
+    int __status__ = start; \
+    while (__status__) { \
+        int timeout = 0; \
+        if (__status__ & MYSQL_WAIT_TIMEOUT) { \
+            timeout = mysql_get_timeout_value(ctx->mysql); \
+        } \
+        __status__ = 0; \
+        if (__status__ & MYSQL_WAIT_READ) { \
+            int hook_ret = ctx->wait_read_hook(mysql_get_socket(ctx->mysql), timeout); \
+            if (hook_ret > 0) { \
+                __status__ |= MYSQL_WAIT_READ; \
+            } else if (hook_ret == 0) { \
+                __status__ |= MYSQL_WAIT_TIMEOUT; \
+            } \
+        } \
+        if (__status__ & MYSQL_WAIT_WRITE) { \
+            int hook_ret = ctx->wait_write_hook(mysql_get_socket(ctx->mysql), timeout); \
+            if (hook_ret > 0) { \
+                __status__ |= MYSQL_WAIT_WRITE; \
+            } else if (hook_ret == 0) { \
+                __status__ |= MYSQL_WAIT_TIMEOUT; \
+            } \
+        } \
+        __status__ = cont; \
+    } \
+} while (0)
 
 static void _query_inner(ConnCtx* ctx, sds query) {
     int query_ret;
-    int __status__ = mysql_real_query_start(&query_ret, ctx->mysql, query, sdslen(query));
-    while (__status__) {
-        int timeout = 0;
-        if (__status__ & MYSQL_WAIT_TIMEOUT) {
-            timeout = mysql_get_timeout_value(ctx->mysql);
-        }
-        if (__status__ & MYSQL_WAIT_READ) {
-            ctx->wait_read_hook(mysql_get_socket(ctx->mysql), timeout);
-            // FIXME
-            __status__ = MYSQL_WAIT_READ;
-        }
-        if (__status__ & MYSQL_WAIT_WRITE) {
-            ctx->wait_write_hook(mysql_get_socket(ctx->mysql), timeout);
-            // FIXME
-            __status__ = MYSQL_WAIT_WRITE;
-        }
-        __status__ = mysql_real_query_cont(&query_ret, ctx->mysql, __status__);
-    }
+    MYSQL_ASYNC(ctx,
+        mysql_real_query_start(&query_ret, ctx->mysql, query, sdslen(query)),
+        mysql_real_query_cont(&query_ret, ctx->mysql, __status__)
+    );
     MARIADB_NOT_ERROR(ctx->mysql, query_ret) { }
 }
 
@@ -77,20 +89,10 @@ static MYSQL_RES* query_bulk(ConnCtx* ctx, sds query) {
 }
 
 static bool async_fetch_row(ConnCtx* ctx,  MYSQL_RES* res, MYSQL_ROW *row) {
-    int __status__ = mysql_fetch_row_start(row, res);
-    while (__status__) {
-        int timeout = 0;
-        if (__status__ & MYSQL_WAIT_TIMEOUT) {
-            timeout = mysql_get_timeout_value(ctx->mysql);
-        }
-        if (__status__ & MYSQL_WAIT_READ) {
-            ctx->wait_read_hook(mysql_get_socket(ctx->mysql), timeout);
-        }
-        if (__status__ & MYSQL_WAIT_WRITE) {
-            ctx->wait_write_hook(mysql_get_socket(ctx->mysql), timeout);
-        }
-        __status__ = mysql_fetch_row_cont(row, res, __status__);
-    }
+    MYSQL_ASYNC(ctx,
+        mysql_fetch_row_start(row, res),
+        mysql_fetch_row_cont(row, res, __status__)
+    );
     return *row != NULL;
 }
 

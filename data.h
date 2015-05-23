@@ -13,8 +13,8 @@ typedef struct {
     redisContext *redis;
     struct PineRequest* req;
 
-    void (*wait_read_hook)(int fd, int timeout);
-    void (*wait_write_hook)(int fd, int timeout);
+    int (*wait_read_hook)(int fd, int timeout);
+    int (*wait_write_hook)(int fd, int timeout);
 } ConnCtx;
 
 typedef struct {

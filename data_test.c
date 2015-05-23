@@ -9,14 +9,14 @@
     abort(); \
 } while (0)
 
-static void wait_read(int fd, int timeout) {
+static int wait_read(int fd, int timeout) {
     struct pollfd pfd = { .fd = fd, .events = POLLIN};
-    poll(&pfd, 1, timeout * 1000);
+    return poll(&pfd, 1, timeout * 1000);
 }
 
-static void wait_write(int fd, int timeout) {
+static int wait_write(int fd, int timeout) {
     struct pollfd pfd = { .fd = fd, .events = POLLOUT};
-    poll(&pfd, 1, timeout * 1000);
+    return poll(&pfd, 1, timeout * 1000);
 }
 
 int main(int argc, char** argv) {
