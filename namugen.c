@@ -779,7 +779,6 @@ void nm_on_finish(struct namugen_ctx* ctx) {
     // Now connect internal links altogether
     int argc = ctx->internal_link_count;
     char *docnames[argc];
-    struct _internal_link_slot *slots[argc];
     bool existencies[argc];
 
     int idx = 0;
@@ -787,7 +786,6 @@ void nm_on_finish(struct namugen_ctx* ctx) {
     struct list* internal_link_list = &ctx->internal_link_list;
     for (e = list_begin(internal_link_list); e != list_end(internal_link_list); e = list_next(e)) {
         struct _internal_link_slot *slot = list_entry(e, struct _internal_link_slot, elem);
-        slots[idx] = slot;
         docnames[idx] = slot->link;
         idx++;
     }
