@@ -6,6 +6,8 @@
 #include "sds/sds.h"
 #include "mariadb-connector-c/include/mysql.h"
 #include "hiredis/hiredis.h"
+#include "raii.h"
+
 
 typedef struct {
     // TODO
@@ -29,6 +31,8 @@ typedef struct {
 
 void Document_init(Document* doc);
 void Document_remove(Document* doc);
+
+#define RAII_Document RAII(Document_remove)
 
 bool find_document(ConnCtx* ctx, sds docname, Document* doc_out);
 

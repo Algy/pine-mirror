@@ -82,12 +82,6 @@ static MYSQL_RES* query_seq(ConnCtx* ctx, sds query) {
     return mysql_ret;
 }
 
-static MYSQL_RES* query_bulk(ConnCtx* ctx, sds query) {
-    _query_inner(ctx, query);
-    MYSQL_RES *mysql_ret = mysql_store_result(ctx->mysql);
-    return mysql_ret;
-}
-
 static bool async_fetch_row(ConnCtx* ctx,  MYSQL_RES* res, MYSQL_ROW *row) {
     MYSQL_ASYNC(ctx,
         mysql_fetch_row_start(row, res),
