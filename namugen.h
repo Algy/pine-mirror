@@ -6,6 +6,50 @@
 #include "sds/sds.h"
 #include "list.h"
 
+#define UNTIL_REACHING1(p, border, c1) while ((p) < (border) && *(p) != (c1))
+#define UNTIL_REACHING2(p, border, c1, c2) while ((p) < (border) && *(p) != (c1) && *(p) != (c2))
+#define UNTIL_REACHING3(p, border, c1, c2, c3) while ((p) < (border) && *(p) != (c1) && *(p) != (c2) && *(p) != (c3))
+#define UNTIL_REACHING4(p, border, c1, c2, c3, c4) while ((p) < (border) && *(p) != (c1) && *(p) != (c2) && *(p) != (c3) && *(p) != (c4))
+#define MET_EOF(p, border) ((p) >= (border))
+#define UNTIL_NOT_REACHING1(p, border, c1) while ((p) < (border) && *(p) == (c1))
+#define UNTIL_NOT_REACHING2(p, border, c1, c2) while ((p) < (border) && (*(p) == (c1) || *(p) == (c2)))
+#define UNTIL_NOT_REACHING3(p, border, c1, c2, c3) while ((p) < (border) && (*(p) == (c1) || *(p) == (c2) || *(p) == (c3)))
+#define CONSUME_SPACETAB(p, border) UNTIL_NOT_REACHING2(p, border, '\t', ' ') { (p)++; }
+#define CONSUME_WHITESPACE(p, border) UNTIL_NOT_REACHING3(p, border, '\t', ' ', '\n') { (p)++; }
+#define RCONSUME_SPACETAB(st, ed) \
+    while ((st) < (ed)) { \
+        bool __end__ = false; \
+        switch (*((ed) - 1)) { \
+        case ' ': case '\t': \
+            ed--;  \
+            break; \
+        default: \
+            __end__ = true; \
+            break; \
+        } \
+        if (__end__) break; \
+    }
+#define RCONSUME_WHITESPACE(st, ed) \
+    while ((st) < (ed)) { \
+        bool __end__ = false; \
+        switch (*((ed) - 1)) { \
+        case ' ': case '\t': case '\n': \
+            ed--;  \
+            break; \
+        default: \
+            __end__ = true; \
+            break; \
+        } \
+        if (__end__) break; \
+    }
+#define IS_WHITESPACE(c) ((c) == ' ' || (c) == '\n' || (c) == '\t')
+#define EQ(p, border, c1) (!MET_EOF(p, border) && (*(p) == (c1)))
+#define SAFE_INC(p, border)  if (!MET_EOF(p, border)) { p++; }
+#define EQSTR(p, border, str) (!strncmp((p), (str), (border) - (p)))
+#define PREFIXSTR(p, border, prefix) (!strncmp((p), (prefix), strlen(prefix)))
+#define CASEPREFIXSTR(p, border, prefix) (!strncasecmp((p), (prefix), strlen(prefix)))
+
+
 enum nm_span_type {
     nm_span_none,
     nm_span_bold,
@@ -36,6 +80,12 @@ enum {
     nm_list_upper_roman,
     nm_list_lower_roman,
 };
+
+typedef struct bndstr {
+    char* str;
+    size_t len;
+} bndstr;
+char* dup_str(char *st, char *ed);
 
 struct namuast_inline;
 struct namuast_table_cell {
@@ -79,7 +129,9 @@ struct namuast_list {
     struct namuast_list* next;
 };
 
+
 struct namugen_ctx;
+
 
 char* find_webcolor_by_name(char *name);
 
@@ -109,6 +161,13 @@ struct nm_block_emitters {
 };
 
 /*
+ * Functins visible to .lex files
+ */
+bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inline *outer_inl);
+void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inline* inl);
+struct namuast_inline* scn_parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx);
+
+/*
  * User-defined emitters
  */
 
@@ -129,14 +188,14 @@ void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl);
 void nm_emit_list(struct namugen_ctx* ctx, struct namuast_list* li);
 void nm_on_start(struct namugen_ctx* ctx);
 void nm_on_finish(struct namugen_ctx* ctx);
-int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* fnt, char* extra);
+int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* fnt, char* head);
 
 struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx);
 void namuast_remove_inline(struct namuast_inline *inl);
 
 void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
 void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) ;
-void nm_inl_emit_char(struct namuast_inline* inl, char c);
+void nm_inl_emit_str(struct namuast_inline* inl, char* s, size_t len);
 void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section);
 void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section);
 void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section);

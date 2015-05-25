@@ -148,9 +148,13 @@ static inline void inl_append_steal(struct namuast_inline *inl, sds s) {
     sdsfree(s);
 }
 
-static inline void inl_append_html_char_to_last(struct namuast_inline* inl, char c) {
-    inl->fast_buf = append_html_content_char(inl->fast_buf, c);
-
+static inline void inl_append_html_str(struct namuast_inline* inl, char *s, size_t len) {
+    sds fast_buf = inl->fast_buf;
+    int idx;
+    for (idx = 0; idx < len; idx++) {
+        fast_buf = append_html_content_char(fast_buf, s[idx]);
+    }
+    inl->fast_buf = fast_buf;
 }
 
 static inline void ctx_append(struct namugen_ctx* ctx, char* s) {
@@ -491,6 +495,8 @@ static char* align_to_str (enum nm_align_type t) {
         return "";
     case nm_align_left:
         return "left";
+    case nm_align_right:
+        return "right";
     case nm_align_center:
     case nm_valign_center:
         return "center";
@@ -863,9 +869,8 @@ void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, e
     namuast_remove_inline(span);
 }
 
-void nm_inl_emit_char(struct namuast_inline* inl, char c) {
-    // TODO: I need more efficient implementation
-    inl_append_html_char_to_last(inl, c);
+void nm_inl_emit_str(struct namuast_inline* inl, char* s, size_t len) {
+    inl_append_html_str(inl, s, len);
 }
 
 void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section) {
