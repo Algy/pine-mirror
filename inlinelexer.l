@@ -1,0 +1,252 @@
+%{
+#include <stdio.h>
+
+#include "namugen.h"
+
+typedef struct {
+    size_t num_chars;
+    struct namuast_inline* inl;
+    struct namugen_ctx *ctx;
+} InlineScannerExtra;
+
+static void as_span(InlineScannerExtra* extra, char* st, char* ed, enum nm_span_type type);
+static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatible_mode);
+#define TRACK_NUM_CHARS yyextra->num_chars += yyleng
+
+%}
+
+letter [a-zA-Z0-9_]
+image_ext ("jpg"|"jpeg"|"png"|"gif")
+image_option ("width"|"height"|"align")
+normal_char [^\n[\]'{~\-_^,h]
+escapable_char_in_link [|[\]]
+not_a_rbrk [^\]\n]
+
+%option noyywrap
+%option reentrant
+%option extra-type="InlineScannerExtra *"
+
+%%
+
+"[*"([^[\]\n]|("[".*"]")|("[[".*"]]"))*"]" {
+    if (nm_in_footnote(yyextra->ctx)) {
+        nm_inl_emit_str(yyextra->inl, yytext, yyleng);
+    } else {
+        char *testp;
+        char *border = yytext + yyleng - 1;
+        char *extra_st = yytext + 2;
+        testp = yytext + 2;
+        UNTIL_REACHING2(testp, border, ' ', '\t') {
+            testp++;
+        }
+        char *extra_ed = testp;
+
+        CONSUME_SPACETAB(testp, border);
+
+        char *head;
+        if (extra_st == extra_ed) {
+            head = NULL;
+        } else
+            head = dup_str(extra_st, extra_ed);
+
+        char *fnt_st_p;
+        char *dummy;
+
+        fnt_st_p = testp;
+        nm_begin_footnote(yyextra->ctx);
+        struct namuast_inline *footnote = scn_parse_inline(testp, border, &dummy, yyextra->ctx);
+        nm_end_footnote(yyextra->ctx);
+
+        int id = nm_register_footnote(yyextra->ctx, footnote, head);
+        nm_inl_emit_footnote_mark(yyextra->inl, id, fnt_st_p, border - fnt_st_p);
+    }
+    TRACK_NUM_CHARS;
+}
+
+"[["(("\\"{escapable_char_in_link})|("]"|""){not_a_rbrk})*"]]" {
+    as_link(yyextra, yytext + 2, yytext + yyleng - 2, false);
+    TRACK_NUM_CHARS;
+}
+
+"["(("\\"{escapable_char_in_link})|{not_a_rbrk})*"]" {
+    as_link(yyextra, yytext + 1, yytext + yyleng - 1, true);
+    TRACK_NUM_CHARS;
+}
+
+"http""s"?"://"[^ \n]*("."{image_ext}|"?.jpg")("?"({image_option}"="{letter}+)("&"{image_option}"="{letter}+)*)? {
+    char *border = yytext + yyleng;
+    char *width = NULL, *height = NULL;
+    char *url = NULL;
+    int align = nm_align_none;
+
+    char* url_st, *url_ed;
+    url_st = yytext;
+    url_ed = border;
+    // now parse the option
+    bool qm_found = false;
+    char *testp;
+    if ((testp = strnstr(yytext, "?", yyleng))) {
+        url_ed = testp;
+        testp++;
+        if (!strncmp(testp, ".jpg", 4)) {
+            testp += 4;
+            if ((testp = strnstr(testp, "?", border - testp))) {
+                qm_found = true;
+                testp++;
+            }
+        } else 
+            qm_found = true;
+    }
+    if (qm_found) {
+        while (1) {
+            char *key_st, *key_ed;
+            char *value_st, *value_ed;
+            key_st = testp;
+            CONSUME_SPACETAB(testp, border);
+            UNTIL_REACHING2(testp, border, '=', '\n') {
+                testp++;
+            }
+            if (!EQ(testp, border, '=')) break;
+            key_ed = testp;
+            RCONSUME_SPACETAB(key_st, key_ed);
+            testp++; // consume '='
+
+            CONSUME_SPACETAB(testp, border);
+            value_st = testp;
+            UNTIL_REACHING4(testp, border, '&', '\n', ' ', '\t') {
+                testp++;
+            }
+            value_ed = testp;
+            RCONSUME_SPACETAB(value_st, value_ed);
+
+            CONSUME_SPACETAB(testp, border);
+
+            // now set up options, though it's a hard wiring hack...
+            if (EQSTR(key_st, key_ed, "width")) {
+                if (width) free(width);
+                width = dup_str(value_st, value_ed);
+            } else if (EQSTR(key_st, key_ed, "height")) {
+                if (height) free(height);
+                height = dup_str(value_st, value_ed);
+            } else if (EQSTR(key_st, key_ed, "align")) {
+                if (EQSTR(value_st, value_ed, "left")) {
+                    align = nm_align_left;
+                } else if (EQSTR(value_st, value_ed, "right")) {
+                    align = nm_align_right;
+                } else if (EQSTR(value_st, value_ed, "center")) {
+                    align = nm_align_center;
+                }
+            }
+
+            if (EQ(testp, border, '&')) {
+                testp++; // consume '&'
+                continue;
+            }
+            break;
+        }
+    }
+    url = dup_str(url_st, url_ed);
+    nm_inl_emit_image(yyextra->inl, url, width, height, align);
+    TRACK_NUM_CHARS;
+}
+
+"{{{"(("}}"|"}"|"")[^}\n])*"}}}" {
+    char *dummyp;
+    scn_parse_block(yytext, yytext + yyleng, &dummyp, &block_emitter_ops_inline, yyextra->ctx, yyextra->inl);
+    TRACK_NUM_CHARS;
+}
+
+"\'\'\'"(("\'\'"|"\'"|"")[^'\n])+"\'\'\'" {
+    as_span(yyextra, yytext + 3, yytext + yyleng - 3, nm_span_bold);
+    TRACK_NUM_CHARS;
+}
+
+"\'\'"(("\'"|"")[^'\n])+"\'\'" {
+    as_span(yyextra, yytext + 2, yytext + yyleng - 2, nm_span_italic);
+    TRACK_NUM_CHARS;
+}
+
+"~~"(("~"|"")[^~\n])+"~~" |
+"--"(("-"|"")[^-\n])+"--" {
+    as_span(yyextra, yytext + 2, yytext + yyleng - 2, nm_span_strike);
+    TRACK_NUM_CHARS;
+}
+
+"__"(("_"|"")[^_\n])+"__" {
+    as_span(yyextra, yytext + 2, yytext + yyleng - 2, nm_span_underline);
+    TRACK_NUM_CHARS;
+}
+
+"^^"(("^"|"")[^^\n])+"^^" {
+    as_span(yyextra, yytext + 2, yytext + yyleng - 2, nm_span_superscript);
+    TRACK_NUM_CHARS;
+}
+
+",,"((","|"")[^,\n])+",," {
+    as_span(yyextra, yytext + 2, yytext + yyleng - 2, nm_span_subscript);
+    TRACK_NUM_CHARS;
+}
+
+
+{normal_char}+ {
+    nm_inl_emit_str(yyextra->inl, yytext, yyleng);
+    TRACK_NUM_CHARS;
+}
+
+
+\n {
+    return 0;
+}
+<<EOF>> {
+    return 0;
+}
+
+. {
+    nm_inl_emit_str(yyextra->inl, yytext, 1);
+    TRACK_NUM_CHARS;
+}
+
+%%
+static void as_span(InlineScannerExtra* extra, char* st, char* ed, enum nm_span_type type) {
+    char *dummy;
+    CONSUME_SPACETAB(st, ed);
+    RCONSUME_SPACETAB(st, ed);
+    struct namuast_inline *span = scn_parse_inline(st, ed, &dummy, extra->ctx);
+    nm_inl_emit_span(extra->inl, span, type);
+}
+
+static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatible_mode) {
+    CONSUME_SPACETAB(st, ed);
+    RCONSUME_SPACETAB(st, ed);
+
+    char *p;
+    for (p = ed - 1; p >= st; ) {
+        if (p - 1 >= st && *(p - 1) == '\\' && *p == '|')
+            p -= 2;
+        else if (*p == '|')
+            break;
+        else
+            p--;
+    }
+    if (p < st)
+        p = NULL;
+    char* pipe_pos = p;
+    scn_parse_link_content(st, ed, pipe_pos, compatible_mode, extra->ctx, extra->inl);
+}
+
+struct namuast_inline* scn_parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx) { 
+    yyscan_t inline_scanner;
+    InlineScannerExtra extra = {
+        .ctx = ctx,
+        .inl = namuast_make_inline(ctx),
+        .num_chars = 0
+    };
+    yylex_init_extra(&extra, &inline_scanner);
+
+    yy_scan_bytes(p, border - p, inline_scanner);
+    yylex(inline_scanner);
+    yylex_destroy(inline_scanner);
+
+    *p_out = p + extra.num_chars;
+    return extra.inl;
+}

@@ -646,7 +646,7 @@ static bool strip_section(char *st, char *ed, char **link_out, char **section_ou
     }
     return false;
 }
-static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mode, char *alias, struct namuast_inline* inl) {
+static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mode, struct namuast_inline *alias, struct namuast_inline* inl) {
     char *link, *section;
     if (!strip_section(link_st, link_ed, &link, &section)) {
         link = unescape_link(dup_str(link_st, link_ed));
@@ -665,27 +665,33 @@ static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mod
 }
 
 void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inline* inl) {
-    char* alias = NULL;
+    char *dummy;
+    struct namuast_inline* alias_subinl = NULL;
     if (pipe_pos) {
         char *rpipe_pos = pipe_pos + 1;
         CONSUME_SPACETAB(rpipe_pos, border);
-        alias = unescape_link(dup_str(rpipe_pos, border));
+        char* alias = unescape_link(dup_str(rpipe_pos, border));
+        alias_subinl = scn_parse_inline(alias, alias + strlen(alias), &dummy, ctx);
+        free(alias);
     }
     char* lpipe_pos = pipe_pos? pipe_pos : border;
     RCONSUME_SPACETAB(p, lpipe_pos);
     
     bool use_wiki = false;
+    bool use_dquote = false;
     if (PREFIXSTR(p, lpipe_pos, "http://") || 
         PREFIXSTR(p, lpipe_pos, "https://") || 
-        (use_wiki = PREFIXSTR(p, lpipe_pos, "wiki:")))  {
+        (use_wiki = PREFIXSTR(p, lpipe_pos, "wiki:")) ||
+        (use_dquote = (*p == '\"')))  {
 
         char* testp = p;
         char *url_st, *url_ed;
         char *link_st, *link_ed;
-        if (use_wiki) {
-            testp += 5; // consume "wiki:"
-            CONSUME_SPACETAB(testp, lpipe_pos);
-
+        if (use_wiki || use_dquote) {
+            if (use_wiki) {
+                testp += 5; // consume "wiki:"
+                CONSUME_SPACETAB(testp, lpipe_pos);
+            }
             if (!EQ(testp, lpipe_pos, '\"')) {
                 goto prefix_failure;
             }
@@ -707,21 +713,20 @@ void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatib
         CONSUME_SPACETAB(testp, lpipe_pos);
         // old-style alias
         if (!MET_EOF(testp, lpipe_pos)) {
-            if (alias) {
-                free(alias);
+            if (alias_subinl) {
+                namuast_remove_inline(alias_subinl);
             }
-            alias = dup_str(testp, lpipe_pos);
+            alias_subinl = scn_parse_inline(testp, lpipe_pos, &dummy, ctx);
         }
-
-        if (use_wiki) {
-            emit_internal_link(link_st, link_ed, compatible_mode, alias, inl);
+        if (use_wiki || use_dquote) {
+            emit_internal_link(link_st, link_ed, compatible_mode, alias_subinl, inl);
         } else {
-            nm_inl_emit_external_link(inl, dup_str(url_st, url_ed), alias);
+            nm_inl_emit_external_link(inl, dup_str(url_st, url_ed), alias_subinl);
         }
         return;
     }
 prefix_failure:
-    emit_internal_link(p, pipe_pos? pipe_pos : border, compatible_mode,  alias, inl);
+    emit_internal_link(p, pipe_pos? pipe_pos : border, compatible_mode, alias_subinl, inl);
 }
 
 static inline int get_span_type_from_double_mark(char mark) {

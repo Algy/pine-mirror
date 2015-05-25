@@ -42,12 +42,12 @@ struct _internal_link_slot {
     sds href;
     sds section;
     sds link;
-    sds alias;
+    struct namuast_inline* alias;
 
     struct sdschunk *chunk;
 };
 
-static struct _internal_link_slot* _make_internal_link(sds href, sds section, sds link, sds alias, struct sdschunk *chunk) {
+static struct _internal_link_slot* _make_internal_link(sds href, sds section, sds link, struct namuast_inline *alias, struct sdschunk *chunk) {
     struct _internal_link_slot *slot = malloc(sizeof(struct _internal_link_slot));
     slot->href = href;
     slot->section = section;
@@ -61,7 +61,9 @@ static void _remove_internal_link(struct _internal_link_slot *slot) {
     SAFELY_SDS_FREE(slot->href);
     SAFELY_SDS_FREE(slot->section);
     SAFELY_SDS_FREE(slot->link);
-    SAFELY_SDS_FREE(slot->alias);
+    if (slot->alias) {
+        namuast_remove_inline(slot->alias);
+    }
     free(slot);
 }
 
@@ -230,45 +232,65 @@ static sds sdscat_inline(sds buf, struct namuast_inline* inl) {
 }
 
 
+struct prlinkinfo {
+    bool exists;
+
+    char *href;
+    char *section;
+    char *title;
+
+    bool is_inline_content;
+    bool is_text_content;
+    union {
+        struct namuast_inline *inl;
+        char *text;
+        char *raw;
+    } content;
+
+    char *extra_class;
+    char *extra_attr; 
+};
+
 // consume all arugments of type of sds given to this
-static sds generate_link(sds buf, bool exist, char *arg_href, char *section, char *title, char *pcontent, char* raw_content, char *extra_class, char *extra_attr) {
-    sds escaped_title = escape_html_attr(title);
-    sds href = sdsnew(arg_href);
-
-    sds content;
-    if (raw_content)
-        content = sdsnew(raw_content);
-    else
-        content = escape_html_content(pcontent);
-
-    if (section) {
-        sds val = escape_html_attr(section);
-        href = sdscat(href, "#s-");
-        href = sdscatsds(href, val);
-        sdsfree(val);
+// static sds generate_link(struct namuast_inline *inl, bool exist, char *arg_href, char *section, char *title, char *pcontent, char* raw_content, char *extra_class, char *extra_attr) {
+//
+// It steals only info->content.inl
+static void generate_link(struct namuast_inline *inl, struct prlinkinfo *info) {
+    inl_append(inl, "<a class='");
+    if (!info->exists) {
+        inl_append(inl, "not-exist ");
     }
-    sds link_class = sdsempty();
-
-    if (!exist) {
-        link_class = sdscat(link_class, " not-exist");
+    if (info->extra_class) {
+        inl_append_steal(inl, sdsnew(info->extra_class));
     }
-
-    if (extra_class) {
-        link_class = sdscat(link_class, " ");
-        link_class = sdscat(link_class, extra_class);
+    inl_append(inl, "' ");
+    if (info->href) {
+        inl_append(inl, "href='");
+        inl_append_steal(inl, escape_html_attr(info->href));
+        if (info->section) {
+            inl_append(inl, "#s-");
+            inl_append_steal(inl, sdsnew(info->section));
+        }
+        inl_append(inl, "' ");
     }
-
-    if (!extra_attr) {
-        extra_attr = "";
+    if (info->title) {
+        inl_append(inl, "title='");
+        inl_append_steal(inl, escape_html_attr(info->title));
+        inl_append(inl, "' ");
     }
+    if (info->extra_attr)
+        inl_append_steal(inl, sdsnew(info->extra_attr));
+    inl_append(inl, ">");
 
-    buf = sdscatprintf(buf, "<a class='%s' href='%s' title='%s'%s>%s</a>", link_class, href, escaped_title, extra_attr, content);
-
-    sdsfree(link_class);
-    sdsfree(href);
-    sdsfree(escaped_title);
-    sdsfree(content);
-    return buf;
+    if (info->is_inline_content) {
+        inl_move_chunks(inl, info->content.inl);
+        namuast_remove_inline(info->content.inl);
+    } else if (info->is_text_content) {
+        inl_append_steal(inl, escape_html_content(info->content.text));
+    } else {
+        inl_append_steal(inl, sdsnew(info->content.raw));
+    }
+    inl_append(inl, "</a>");
 }
 
 
@@ -339,7 +361,18 @@ static inline void inl_steal_fnt_item(struct namuast_inline* inl, struct fnt *fn
     }
 
     inl_append(inl, "<span class='footnote-list'>");
-    inl_append_steal(inl, generate_link(sdsempty(), true, href, NULL, "", NULL, mark, "wiki-fn-content", id_def));
+    struct prlinkinfo info = {
+        .exists = true,
+        .href = href,
+        .section = NULL,
+        .title = "본문으로",
+        .is_inline_content = false,
+        .is_text_content = false,
+        .extra_class = "wiki-fn-content",
+        .extra_attr = id_def
+    };
+    info.content.raw = mark;
+    generate_link(inl, &info);
     inl_move_chunks(inl, fnt->content);
     inl_append(inl, "</span>");
 
@@ -804,17 +837,29 @@ void nm_on_finish(struct namugen_ctx* ctx) {
                 struct _internal_link_slot, 
                 elem
         );
-        fill_lazy_sdschunk(slot->chunk, 
-                generate_link(sdsempty(), 
-                    existencies[idx], 
-                    slot->href, 
-                    slot->section, 
-                    slot->link, 
-                    slot->alias? slot->alias:slot->link, 
-                    NULL, 
-                    "wiki-internal-link", 
-                    NULL)
-        );
+
+        struct prlinkinfo info = {
+            .exists = existencies[idx],
+            .href = slot->href,
+            .section = slot->section,
+            .title = slot->link,
+            .is_inline_content = true,
+            .is_text_content = false,
+            .extra_class = "wiki-internal-link",
+            .extra_attr = NULL
+        };
+        if (slot->alias) 
+            info.content.inl = slot->alias;
+        else {
+            info.is_inline_content = false;
+            info.is_text_content = true;
+            info.content.text = slot->link;
+        }
+        slot->alias = NULL; 
+        struct namuast_inline *link_inl = namuast_make_inline(ctx);
+        generate_link(link_inl, &info);
+        fill_lazy_sdschunk(slot->chunk, sdscat_inline(sdsempty(), link_inl));
+        namuast_remove_inline(link_inl);
         _remove_internal_link(slot);
         idx++;
     }
@@ -873,7 +918,7 @@ void nm_inl_emit_str(struct namuast_inline* inl, char* s, size_t len) {
     inl_append_html_str(inl, s, len);
 }
 
-void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section) {
+void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, struct namuast_inline *alias, char *section) {
     struct namugen_ctx *ctx = inl->ctx;
     struct namugen_hook_itfc* hook_itfc = ctx->namugen_hook_itfc;
     struct namugen_doc_itfc* doc_itfc = ctx->doc_itfc;
@@ -915,24 +960,24 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
 
     sds sds_section = NULL;
     sds sds_link = NULL;
-    sds sds_alias = NULL;
     if (section) sds_section = sdsnew(section);
     if (link) sds_link = sdsnew(link);
-    if (alias) sds_alias = sdsnew(alias);
 
-    struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, sds_alias, inl_append_lazy_chunk(inl));
+    struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, alias, inl_append_lazy_chunk(inl));
+    alias = NULL; // stolen
+
     list_push_back(&ctx->internal_link_list, &slot->elem);
     ctx->internal_link_count++;
 cleanup:
     if (link)
         free(link);
     if (alias)
-        free(alias);
+        namuast_remove_inline(alias);
     if (section)
         free(section);
 }
 
-void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section) {
+void nm_inl_emit_upper_link(struct namuast_inline* inl, struct namuast_inline *alias, char *section) {
     struct namugen_ctx* ctx = inl->ctx;
     struct namugen_doc_itfc *doc_itfc = ctx->doc_itfc;
     sds cur_doc_name = ctx->cur_doc_name; // borrowed
@@ -954,19 +999,36 @@ void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *secti
         exist = false;
         href = NULL;
     }
-
-    inl_append_steal(inl, generate_link(sdsempty(), exist, href? href : "", section, upper_doc_name? upper_doc_name : "../", alias? alias : (upper_doc_name? upper_doc_name : "../"), NULL, "wiki-internal-link", NULL));
+    struct prlinkinfo info = {
+        .exists = exist,
+        .href = href,
+        .section = section,
+        .title = upper_doc_name? upper_doc_name : "../",
+        .extra_class = "wiki-internal-link",
+        .extra_attr = NULL
+    };
+    if (alias) {
+        info.is_inline_content = true;
+        info.is_text_content = false;
+        info.content.inl = alias;
+    } else {
+        info.is_inline_content = false;
+        info.is_text_content = true;
+        if (upper_doc_name) {
+            info.content.text = upper_doc_name;
+        } else
+            info.content.text = "../";
+    }
+    generate_link(inl, &info);
     if (href)
         sdsfree(href);
     if (upper_doc_name)
         sdsfree(upper_doc_name);
-    if (alias)
-        free(alias);
     if (section)
         free(section);
 }
 
-void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section) {
+void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, struct namuast_inline *alias, char *section) {
     struct namugen_ctx* ctx = inl->ctx;
     struct namugen_doc_itfc* doc_itfc = ctx->doc_itfc;
     char *argv[] = {inl->ctx->cur_doc_name, link};
@@ -975,24 +1037,53 @@ void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias,
     sds href = doc_itfc->doc_href(doc_itfc, docname); 
     bool exist;
     doc_itfc->documents_exist(doc_itfc, 1, &docname, &exist);
-    inl_append_steal(inl, generate_link(sdsempty(), exist, href, section, link, alias? alias : link, NULL, "wiki-internal-link", NULL));
+    struct prlinkinfo info = {
+        .exists = exist,
+        .href = href,
+        .section = section,
+        .title = link,
+        .extra_class = "wiki-internal-link",
+        .extra_attr = NULL
+    };
+    if (alias) {
+        info.is_inline_content = true;
+        info.is_text_content = false;
+        info.content.inl = alias;
+    } else {
+        info.is_inline_content = false;
+        info.is_text_content = true;
+        info.content.text = docname;
+    }
 
     sdsfree(docname);
     sdsfree(href);
     if (link)
         free(link);
-    if (alias)
-        free(alias);
     if (section)
         free(section);
 }
 
-void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias) {
-    inl_append_steal(inl, generate_link(sdsempty(), true, link, NULL, "", alias? alias : link, NULL, "wiki-extenral-link", " target='_blank'"));
+void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, struct namuast_inline* alias) {
+    struct prlinkinfo info = {
+        .exists = true,
+        .href = link,
+        .section = NULL,
+        .title = NULL,
+        .extra_class = "wiki-external-link",
+        .extra_attr = "target='_blank'"
+    };
+    if (alias) {
+        info.is_inline_content = true;
+        info.is_text_content = false;
+        info.content.inl = alias;
+    } else {
+        info.is_inline_content = false;
+        info.is_text_content = true;
+        info.content.text = link;
+    }
+    generate_link(inl, &info);
     if (link)
         free(link);
-    if (alias)
-        free(alias);
 }
 
 
@@ -1050,7 +1141,18 @@ void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, char* fnt_lit
         mark = sdscatprintf(sdsempty(), "[%d]", fnt->repr.anon_num);
 
     sds literal = sdsnewlen(fnt_literal, len);
-    inl_append_steal(inl, generate_link(sdsempty(), true, href, NULL, literal, NULL, mark, "wiki-rfn-content", id_def));
+    struct prlinkinfo info = {
+        .exists = true,
+        .href = href,
+        .section = NULL,
+        .title = literal,
+        .is_inline_content = false,
+        .is_text_content = false,
+        .extra_class = "wiki-fn-content",
+        .extra_attr = id_def
+    };
+    info.content.raw = mark;
+    generate_link(inl, &info);
 
     sdsfree(mark);
     sdsfree(literal);

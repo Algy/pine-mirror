@@ -196,10 +196,10 @@ void namuast_remove_inline(struct namuast_inline *inl);
 void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
 void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) ;
 void nm_inl_emit_str(struct namuast_inline* inl, char* s, size_t len);
-void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, char *alias, char *section);
-void nm_inl_emit_upper_link(struct namuast_inline* inl, char *alias, char *section);
-void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, char *alias, char *section);
-void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, char *alias);
+void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, struct namuast_inline *alias, char *section);
+void nm_inl_emit_upper_link(struct namuast_inline* inl, struct namuast_inline *alias, char *section);
+void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, struct namuast_inline *alias, char *section);
+void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, struct namuast_inline *alias);
 void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char *height, int align);
 void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, char* fnt_literal, size_t len);
 
