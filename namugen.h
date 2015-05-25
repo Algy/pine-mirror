@@ -222,11 +222,14 @@ struct namugen_hook_itfc {
 #define INITIAL_MAIN_BUF (4096*4)
 #define INITIAL_INTERNAL_LINKS 1024
 
+#define INLINE
+
 typedef struct {
     sds buf;
     int refcount;
     bool is_lazy;
 } sdsbox;
+
 struct sdschunk {
     sdsbox *box;
     struct list_elem elem;
@@ -254,6 +257,8 @@ struct namugen_ctx {
     struct namugen_hook_itfc *namugen_hook_itfc;
 
     sds cur_doc_name;
+
+    struct list inl_pool;
 }; 
 
 

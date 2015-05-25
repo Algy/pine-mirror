@@ -4,6 +4,8 @@
 #include "escaper.inc"
 #define SAFELY_SDS_FREE(expr) if (expr) sdsfree(expr); expr = NULL;
 
+#define INLINE_POOL_SIZE 256
+
 struct heading {
     struct namuast_inline *content;
     sds section_name;
@@ -34,7 +36,19 @@ struct namuast_inline {
     struct list chunk_list;
 
     sds fast_buf;
+
+    struct list_elem pool_elem;
+    bool in_use;
 };
+
+static inline void ctx_provide_new_inlines(struct namugen_ctx* ctx) {
+    int idx;
+    for (idx = 0; idx < INLINE_POOL_SIZE; idx++) {
+        struct namuast_inline* inl = malloc(sizeof(struct namuast_inline));
+        list_push_back(&ctx->inl_pool, &inl->pool_elem);
+        inl->in_use = false;
+    }
+}
 
 struct _internal_link_slot {
     struct list_elem elem;
@@ -584,7 +598,12 @@ static char* align_to_str (enum nm_align_type t) {
 }
 
 struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx) {
-    struct namuast_inline *inl = malloc(sizeof(struct namuast_inline));
+    struct list* inl_pool = &ctx->inl_pool;
+    if (list_empty(inl_pool)) {
+        ctx_provide_new_inlines(ctx);
+    }
+    struct namuast_inline *inl = list_entry(list_pop_back(inl_pool), struct namuast_inline, pool_elem);
+    inl->in_use = true;
     inl->ctx = ctx;
     inl->fast_buf = sdsempty();
     list_init(&inl->chunk_list);
@@ -592,13 +611,15 @@ struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx) {
 }
 
 void namuast_remove_inline(struct namuast_inline *inl) {
+    assert (inl->in_use);
     struct list* chunk_list = &inl->chunk_list;
     while (!list_empty(chunk_list)) {
         struct sdschunk* chunk = list_entry(list_pop_back(chunk_list), struct sdschunk, elem);
         remove_sdschunk(chunk);
     }
     sdsfree(inl->fast_buf);
-    free(inl);
+    inl->in_use = false;
+    list_push_back(&inl->ctx->inl_pool, &inl->pool_elem);
 }
 
 // TODO's
@@ -1281,6 +1302,7 @@ struct namugen_ctx* namugen_make_ctx(char* cur_doc_name, struct namugen_doc_itfc
     ctx->main_fast_buf = sdsempty();
     ctx->cur_doc_name = sdsnew(cur_doc_name);
 
+    list_init(&ctx->inl_pool);
     return ctx;
 }
 
@@ -1303,4 +1325,18 @@ void namugen_remove_ctx(struct namugen_ctx* ctx) {
     sdsfree(ctx->cur_doc_name);
     sdsfree(ctx->main_fast_buf);
     free(ctx);
+
+    struct list* inl_pool = &ctx->inl_pool;
+    struct list_elem *e, *end, *next;
+    end = list_end(inl_pool);
+    for (e = list_begin(inl_pool); e != end; ) {
+        next = list_next(e);
+        struct namuast_inline* inl = list_entry(e, struct namuast_inline, pool_elem);
+        if (inl->in_use) {
+            fprintf(stderr, "Namugen warning: %p(structure namuast_inline) was not free'd before context got free'd\n", inl);
+            namuast_remove_inline(inl);
+        } 
+        free(inl);
+        e = next;
+    }
 }
