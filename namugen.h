@@ -222,10 +222,14 @@ struct namugen_hook_itfc {
 #define INITIAL_MAIN_BUF (4096*4)
 #define INITIAL_INTERNAL_LINKS 1024
 
-struct sdschunk {
-    struct list_elem elem;
+typedef struct {
     sds buf;
+    int refcount;
     bool is_lazy;
+} sdsbox;
+struct sdschunk {
+    sdsbox *box;
+    struct list_elem elem;
 };
 
 
@@ -237,7 +241,7 @@ struct namugen_ctx {
 
     struct heading* root_heading; // sentinel-heading
 
-    struct sdschunk* toc_positions[MAX_TOC_COUNT];
+    sdsbox* toc_positions[MAX_TOC_COUNT];
     int toc_count;
 
     struct list internal_link_list;

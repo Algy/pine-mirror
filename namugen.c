@@ -44,16 +44,16 @@ struct _internal_link_slot {
     sds link;
     struct namuast_inline* alias;
 
-    struct sdschunk *chunk;
+    sdsbox *box;
 };
 
-static struct _internal_link_slot* _make_internal_link(sds href, sds section, sds link, struct namuast_inline *alias, struct sdschunk *chunk) {
+static struct _internal_link_slot* _make_internal_link(sds href, sds section, sds link, struct namuast_inline *alias, sdsbox *box) {
     struct _internal_link_slot *slot = malloc(sizeof(struct _internal_link_slot));
     slot->href = href;
     slot->section = section;
     slot->link = link;
     slot->alias = alias;
-    slot->chunk = chunk;
+    slot->box = box;
     return slot;
 }
 
@@ -68,32 +68,56 @@ static void _remove_internal_link(struct _internal_link_slot *slot) {
 }
 
 
+#define IS_MERGABLE(x) ((x) != NULL && !(x)->box->is_lazy && (x)->box->refcount <= 1)
 static struct sdschunk* make_lazy_sdschunk() {
+    sdsbox *box = malloc(sizeof(sdsbox));
+    box->buf = NULL;
+    box->is_lazy = true;
+    box->refcount = 1;
     struct sdschunk* chk = malloc(sizeof(struct sdschunk));
-    chk->buf = NULL;
-    chk->is_lazy = true;
+    chk->box = box;
     return chk;
 }
 
 // steal buf
-static void fill_lazy_sdschunk(struct sdschunk* chk, sds buf) {
-    assert(chk->is_lazy);
-    assert(chk->buf == NULL);
-    chk->buf = buf;
-    chk->is_lazy = false;
+static void sdsbox_fill(sdsbox* box, sds buf) {
+    assert(box->is_lazy);
+    assert(box->buf == NULL);
+    box->buf = buf;
+    box->is_lazy = false;
+}
+
+static inline void sdsbox_obtain(sdsbox* box) {
+    box->refcount++;
+}
+
+static inline void sdsbox_release(sdsbox* box) {
+    if (--box->refcount <= 0) {
+        sdsfree(box->buf);
+        free(box);
+    }
 }
 
 static struct sdschunk* make_sdschunk_steal(sds buf) {
     struct sdschunk* chk = malloc(sizeof(struct sdschunk));
-    chk->buf = buf;
-    chk->is_lazy = false;
+    sdsbox *box = malloc(sizeof(sdsbox));
+    box->refcount = 1;
+    box->buf = buf;
+    box->is_lazy = false;
+    chk->box = box;
     return chk;
 }
 
 static void remove_sdschunk(struct sdschunk* chk) {
-    if (chk->buf)
-        sdsfree(chk->buf);
+    sdsbox_release(chk->box);
     free(chk);
+}
+
+static struct sdschunk* dup_chunk(struct sdschunk* src) {
+    struct sdschunk* chk = malloc(sizeof(struct sdschunk));
+    chk->box = src->box;
+    sdsbox_obtain(chk->box);
+    return chk;
 }
 
 static void remove_chunk_list(struct list *chunk_list) {
@@ -109,8 +133,8 @@ static inline void flush_fast_buf(sds *p_fast_buf, struct list* chunk_list) {
         bool attached = false;
         if (!list_empty(chunk_list)) { 
             struct sdschunk *back = list_entry(list_back(chunk_list), struct sdschunk, elem);
-            if (!back->is_lazy) {
-                back->buf = sdscatsds(back->buf, fast_buf);
+            if (IS_MERGABLE(back)) {
+                back->box->buf = sdscatsds(back->box->buf, fast_buf);
                 sdsclear(fast_buf);
                 attached = true;
             }
@@ -132,12 +156,11 @@ static inline void ctx_flush_main_fast_buf(struct namugen_ctx* ctx) {
 }
 
 
-static inline struct sdschunk* inl_append_lazy_chunk(struct namuast_inline *inl) {
+static inline sdsbox* inl_append_lazy_box(struct namuast_inline *inl) {
     inl_flush_fast_buf(inl);
     struct sdschunk* chk = make_lazy_sdschunk();
     list_push_back(&inl->chunk_list, &chk->elem);
-    return chk;
-
+    return chk->box;
 }
 
 static inline void inl_append(struct namuast_inline *inl, char* s) {
@@ -159,6 +182,17 @@ static inline void inl_append_html_str(struct namuast_inline* inl, char *s, size
     inl->fast_buf = fast_buf;
 }
 
+static inline struct namuast_inline* dup_inline(struct namuast_inline* src) {
+    struct namuast_inline *inl = namuast_make_inline(src->ctx);
+    struct list_elem* e;
+    struct list_elem* end = list_end(&src->chunk_list);
+    for (e = list_begin(&src->chunk_list); e != end; e = list_next(e)) {
+        list_push_back(&inl->chunk_list, &(dup_chunk(list_entry(e, struct sdschunk, elem))->elem));
+    }
+    inl->fast_buf = sdscpylen(inl->fast_buf, src->fast_buf, sdslen(src->fast_buf));
+    return inl;
+}
+
 static inline void ctx_append(struct namugen_ctx* ctx, char* s) {
     ctx->main_fast_buf = sdscat(ctx->main_fast_buf, s);
 
@@ -176,16 +210,17 @@ static inline void merge_chunk_list(struct list* dest_chunk_list, struct list* s
     } else {
         dest_back = list_entry(list_back(dest_chunk_list), struct sdschunk, elem);
     }
-    bool back_is_lazy = dest_back == NULL || dest_back->is_lazy;
+    bool back_is_mergable = IS_MERGABLE(dest_back);
     while (!list_empty(src_chunk_list)) {
         struct sdschunk *src_chk = list_entry(list_pop_front(src_chunk_list), struct sdschunk, elem);
-        if (!back_is_lazy && !src_chk->is_lazy) {
-            dest_back->buf = sdscatsds(dest_back->buf, src_chk->buf);
+        bool src_chk_mergable = IS_MERGABLE(src_chk);
+        if (back_is_mergable && src_chk_mergable) {
+            dest_back->box->buf = sdscatsds(dest_back->box->buf, src_chk->box->buf);
             remove_sdschunk(src_chk);
         } else {
             list_push_back(dest_chunk_list, &src_chk->elem);
             dest_back = src_chk;
-            back_is_lazy = src_chk->is_lazy;
+            back_is_mergable = src_chk_mergable;
         }
     }
 }
@@ -202,23 +237,29 @@ static inline void ctx_steal_chunks_from_inline(struct namugen_ctx* ctx, struct 
     merge_chunk_list(&ctx->main_chunk_list, &inl->chunk_list);
 }
 
+static inline void ctx_append_inline(struct namugen_ctx* ctx, struct namuast_inline* inl) {
+    ctx_steal_chunks_from_inline(ctx, inl);
+    namuast_remove_inline(inl);
+}
+
 
 static sds sdscat_chunk_list(sds dest, struct list* chunk_list) {
     struct list_elem* e, *end;
     size_t overall_size = 0;
     for (e = list_begin(chunk_list); e != list_end(chunk_list); e = list_next(e)) {
         struct sdschunk* chk = list_entry (e, struct sdschunk, elem);
-        if (chk->buf)
-            overall_size += sdslen(chk->buf);
+        if (chk->box->buf)
+            overall_size += sdslen(chk->box->buf);
     }
     dest = sdsMakeRoomFor(dest, overall_size);
     char *p = dest + sdslen(dest);
     end = list_end(chunk_list);
     for (e = list_begin(chunk_list); e != end; e = list_next(e)) {
         struct sdschunk* chk = list_entry (e, struct sdschunk, elem);
-        if (chk->buf) {
-            size_t chk_buf_len = sdslen(chk->buf);
-            memcpy(p, chk->buf, sizeof(char) * chk_buf_len);
+        sds chk_buf = chk->box->buf;
+        if (chk_buf) {
+            size_t chk_buf_len = sdslen(chk_buf);
+            memcpy(p, chk_buf, sizeof(char) * chk_buf_len);
             p += chk_buf_len;
         }
     }
@@ -396,12 +437,12 @@ static void emit_fnt(struct namuast_inline *inl) {
 static void emit_toc(struct namuast_inline *inl) {
     // lazy emission
     struct namugen_ctx *ctx = inl->ctx;
-    struct sdschunk* chk = inl_append_lazy_chunk(inl);
+    sdsbox* box = inl_append_lazy_box(inl);
 
     if (ctx->toc_count < MAX_TOC_COUNT) {
-        ctx->toc_positions[ctx->toc_count++] = chk;
+        ctx->toc_positions[ctx->toc_count++] = box;
     } else
-        remove_sdschunk(chk);
+        sdsbox_release(box);
 }
 
 static sds dfs_toc(sds buf, struct heading* hd) {
@@ -437,8 +478,8 @@ static void do_emit_toc(struct namugen_ctx* ctx) {
         sds toc_buf = get_toc_sds(ctx->root_heading);
         int idx;
         for (idx = 0; idx < ctx->toc_count; idx++) {
-            struct sdschunk* chk = ctx->toc_positions[idx];
-            fill_lazy_sdschunk(chk, sdsdup(toc_buf));
+            sdsbox* box = ctx->toc_positions[idx];
+            sdsbox_fill(box, sdsdup(toc_buf));
         }
         sdsfree(toc_buf);
         ctx->toc_count = 0;
@@ -470,9 +511,9 @@ void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* 
                 "<h%d><a class='wiki-heading' href='#toc' id='s-%s'>%s</a>. ", 
                 h_num, section_name, section_name));
 
-    // Here, I don't own `content` object. Rather, heading container owns it. So I cannot steal content from it.
-    // Therefore, I should stringify it and use its string.
-    ctx_append_steal(ctx, sdscat_inline(sdsempty(), content));
+    // `hd` owns `content'
+    // So we need to duplicate it.
+    ctx_append_inline(ctx, dup_inline(content));
     ctx_append_steal(ctx, sdscatprintf(sdsempty(), "</h%d>", h_num));
 }
 
@@ -592,9 +633,8 @@ bool nm_in_footnote(struct namugen_ctx* ctx) {
 
 void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inline* inl) {
     ctx_append(ctx, "<blockquote class=\"wiki-quote\">");
-    ctx_steal_chunks_from_inline(ctx, inl);
+    ctx_append_inline(ctx, inl);
     ctx_append(ctx, "</blockquote>");
-    namuast_remove_inline(inl);
 }
 
 static inline sds add_html_attr(sds s, const char* key, char* value) {
@@ -810,12 +850,10 @@ void nm_on_start(struct namugen_ctx* ctx) {
 void nm_on_finish(struct namugen_ctx* ctx) {
     struct namuast_inline *inl = namuast_make_inline(ctx);
     emit_fnt(inl);
-
     // no need to remove inl cuz nm_ prefixed functions always deal with it.
     nm_emit_inline(ctx, inl);
-    do_emit_toc(ctx);
 
-    // Now connect internal links altogether
+    // Now fill up the contents of internal links 
     int argc = ctx->internal_link_count;
     char *docnames[argc];
     bool existencies[argc];
@@ -858,11 +896,14 @@ void nm_on_finish(struct namugen_ctx* ctx) {
         slot->alias = NULL; 
         struct namuast_inline *link_inl = namuast_make_inline(ctx);
         generate_link(link_inl, &info);
-        fill_lazy_sdschunk(slot->chunk, sdscat_inline(sdsempty(), link_inl));
+        sdsbox_fill(slot->box, sdscat_inline(sdsempty(), link_inl));
         namuast_remove_inline(link_inl);
         _remove_internal_link(slot);
         idx++;
     }
+
+    // Finally, fill tocs
+    do_emit_toc(ctx);
 }
 
 
@@ -963,7 +1004,7 @@ void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mo
     if (section) sds_section = sdsnew(section);
     if (link) sds_link = sdsnew(link);
 
-    struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, alias, inl_append_lazy_chunk(inl));
+    struct _internal_link_slot *slot = _make_internal_link(href, sds_section, sds_link, alias, inl_append_lazy_box(inl));
     alias = NULL; // stolen
 
     list_push_back(&ctx->internal_link_list, &slot->elem);
