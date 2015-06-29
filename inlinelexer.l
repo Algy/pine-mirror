@@ -28,7 +28,7 @@ not_a_rbrk [^\]\n]
 
 %%
 
-"[*"([^[\]\n]|("[".*"]")|("[[".*"]]"))*"]" {
+"[*"([^[\]\n]|("["[^\]\n]*"]")|("[["("]"?[^\]\n])*"]]"))*"]" {
     if (nm_in_footnote(yyextra->ctx)) {
         bndstr s = {yytext, yyleng};
         nm_inl_emit_str(yyextra->container, s);

@@ -531,6 +531,8 @@ static sds fnt_content_to_html(struct namuast_inl_fnt *fnt, htmlgen_ctx *ctx, sd
 }
 
 static sds fnt_section_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
+    struct namuast_inl_fnt_section *fnt_section = (struct namuast_inl_fnt_section *)inl;
+
     struct namuast_container *ast = ctx->ast_being_used;
     struct list *fnt_list = &ast->fnt_list;
     struct list_elem *e;
@@ -539,12 +541,20 @@ static sds fnt_section_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds bu
     } else {
         e = list_begin(fnt_list);
     }
-    buf = sdscat(buf, "<ol wiki-macro-footnote>");
-    for (; e != list_end(fnt_list); e = list_next(e)) {
-        struct namuast_inl_fnt *fnt = list_entry(e, struct namuast_inl_fnt, elem);
-        buf = fnt_content_to_html(fnt, ctx, buf);
+
+    if (e != list_end(fnt_list)) {
+        buf = sdscat(buf, "<ol wiki-macro-footnote>");
+        for (; e != list_end(fnt_list); e = list_next(e)) {
+            struct namuast_inl_fnt *fnt = list_entry(e, struct namuast_inl_fnt, elem);
+            if (fnt->id > fnt_section->cur_footnote_id) {
+                break;
+            }
+            buf = fnt_content_to_html(fnt, ctx, buf);
+            ctx->last_emitted_fnt = fnt;
+        }
+        buf = sdscat(buf, "</ol>");
     }
-    buf = sdscat(buf, "</ol>");
+
     return buf;
 } 
 
