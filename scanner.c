@@ -29,6 +29,11 @@
 #define verbose_str(st, ed) {}
 #endif
 
+bndstr to_bndstr(char *st, char *ed) {
+    bndstr result = {st, ed - st};
+    return result;
+}
+
 
 struct webcolor_name {
     char *name;
@@ -181,10 +186,10 @@ struct webcolor_name webcolor_nametbl[] = {
     {NULL, NULL}
 };
 
-char* find_webcolor_by_name(char *name) {
+char* find_webcolor_by_name(char *name, size_t len) {
     struct webcolor_name *wnm;
     for (wnm = webcolor_nametbl; wnm->name; wnm++) {
-        if (!strcasecmp(wnm->name, name)) {
+        if (!strncasecmp(wnm->name, name, len)) {
             return wnm->webcolor;
         }
     }
@@ -193,24 +198,27 @@ char* find_webcolor_by_name(char *name) {
 
 
 
-static inline struct namuast_inline* parse_multiline(char *p, char* border, struct namugen_ctx* ctx);
+static inline struct namuast_inl_container* parse_multiline(char *p, char* border, struct namugen_ctx* ctx);
 
-struct namuast_list* namuast_make_list(int type, struct namuast_inline* content) {
-    struct namuast_list* retval = calloc(sizeof(struct namuast_list), 1);
+struct namuast_list* namuast_make_list(int type, struct namuast_inl_container* content) {
+    struct namuast_list* retval = (struct namuast_list*)NEW_NAMUAST(namuast_type_list);
     retval->type = type;
     retval->content = content;
     return retval;
 }
 
-void namuast_remove_list(struct namuast_list* inl) {
+void _namuast_dtor_list(struct namuast_base *base) {
+    struct namuast_list* lt = (struct namuast_list *)base;
     struct namuast_list* sibling;
-    for (sibling = inl; sibling; ) {
+    for (sibling = lt; sibling; ) {
         if (sibling->content)
-            namuast_remove_inline(sibling->content);
+            RELEASE_NAMUAST(sibling->content);
         if (sibling->sublist)
-            namuast_remove_list(sibling->sublist);
+            RELEASE_NAMUAST(sibling->sublist);
         struct namuast_list* next = sibling->next;
-        free(sibling);
+        if (sibling != lt) {
+            free(sibling); // HACK
+        }
         sibling = next;
     }
 }
@@ -250,7 +258,7 @@ struct namuast_table_row* namuast_add_table_row(struct namuast_table* table) {
 }
 
 struct namuast_table* namuast_make_table() {
-    struct namuast_table* table = malloc(sizeof(struct namuast_table));
+    struct namuast_table* table = (struct namuast_table*)NEW_NAMUAST(namuast_type_table);
     table->row_size = 8;
     table->row_count = 0;
     table->align = nm_align_none;
@@ -264,7 +272,8 @@ struct namuast_table* namuast_make_table() {
     return table;
 }
 
-void namuast_remove_table(struct namuast_table* table) {
+void _namuast_dtor_table(struct namuast_base *base) {
+    struct namuast_table* table = (struct namuast_table*)base;
     size_t row_idx;
     for (row_idx = 0; row_idx < table->row_count; row_idx++) {
         struct namuast_table_row *row = &table->rows[row_idx];
@@ -272,7 +281,7 @@ void namuast_remove_table(struct namuast_table* table) {
         for (col_idx = 0; col_idx < row->col_count; col_idx++) {
             struct namuast_table_cell *cell = &row->cols[col_idx];
             if (cell->content) {
-                namuast_remove_inline(cell->content);
+                RELEASE_NAMUAST(cell->content);
             }
             if (cell->bg_webcolor) free(cell->bg_webcolor);
             if (cell->width) free(cell->width);
@@ -285,9 +294,8 @@ void namuast_remove_table(struct namuast_table* table) {
     if (table->width) free(table->width);
     if (table->height) free(table->height);
     if (table->bg_webcolor) free(table->bg_webcolor);
-    if (table->caption) namuast_remove_inline(table->caption);
+    if (table->caption) RELEASE_NAMUAST(table->caption);
     free(table->rows);
-    free(table);
 }
 
 char* dup_str(char *st, char *ed) {
@@ -510,12 +518,12 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
     return table;
 failure:
     verbose_log("Table creation failed..\n");
-    namuast_remove_table(table);
+    RELEASE_NAMUAST(table);
     return NULL;
 }
 
 
-bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inline *outer_inl) {
+bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inl_container *container) {
     if (EQ(p + 2, border, '{') && *(p + 1) == '{' && *p == '{') {
         char *lastp = p + 3;
         char *content_end_p;
@@ -547,8 +555,8 @@ bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitte
                         testp++;
                         CONSUME_WHITESPACE(testp, border);
                         RCONSUME_SPACETAB(testp, border);
-                        struct namuast_inline *content = scn_parse_inline(testp, content_end_p, &testp, ctx);
-                        if (ops->emit_highlighted_block(ctx, outer_inl, content, highlight_level)) {
+                        namuast_inl_container *content = scn_parse_inline(make_inl_container(), testp, content_end_p, &testp, ctx);
+                        if (ops->emit_highlighted_block(ctx, container, content, highlight_level)) {
                             *p_out = lastp;
                             return true;
                         }
@@ -566,29 +574,31 @@ bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitte
                         testp += 5;
                         CONSUME_SPACETAB(testp, content_end_p);
                         RCONSUME_SPACETAB(testp, content_end_p);
-                        if (ops->emit_html(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                        bndstr html = {testp, content_end_p - testp};
+                        if (ops->emit_html(ctx, container, html)) {
                             *p_out = lastp;
                             return true;
                         }
                     }
                 } else if (ops->emit_colored_block) {
-                    char *color_str = dup_str(color_st, color_ed);
                     char *colorname;
-                    char *webcolor;
-                    if ((colorname = find_webcolor_by_name(color_str))) {
-                        webcolor = dup_str(colorname, colorname + strlen(colorname));
+                    char colorbuf[64];
+                    bndstr webcolor;
+                    if ((colorname = find_webcolor_by_name(color_st, color_ed - color_st))) {
+                        webcolor.str = colorname;
+                        webcolor.len = strlen(colorname);
                     } else {
-                        size_t cn_len = strlen(color_str);
-                        webcolor = calloc(cn_len + 1 + 1, sizeof(char));
-                        webcolor[0] = '#';
-                        strcpy(webcolor + 1, color_str);
+                        size_t color_len = color_ed - color_st < 62? color_ed - color_st : 62;
+                        colorbuf[0] = '#';
+                        memcpy(colorbuf + 1, color_st, sizeof(char) * color_len);
+                        colorbuf[color_len + 1] = 0;
+                        webcolor.str = colorbuf;
+                        webcolor.len = color_len + 1;
                     }
-                    free(color_str);
-
                     CONSUME_SPACETAB(testp, content_end_p);
                     RCONSUME_SPACETAB(testp, content_end_p);
-                    struct namuast_inline *content = scn_parse_inline(testp, content_end_p, &testp, ctx);
-                    if (ops->emit_colored_block(ctx, outer_inl, content, webcolor)) {
+                    struct namuast_inl_container *content = scn_parse_inline(make_inl_container(), testp, content_end_p, &testp, ctx);
+                    if (ops->emit_colored_block(ctx, container, content, webcolor)) {
                         *p_out = lastp;
                         return true;
                     }
@@ -598,7 +608,7 @@ bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitte
                 // raw string
                 CONSUME_SPACETAB(testp, content_end_p);
                 RCONSUME_SPACETAB(testp, content_end_p);
-                if (ops->emit_raw(ctx, outer_inl, dup_str(testp, content_end_p))) {
+                if (ops->emit_raw(ctx, container, (bndstr){testp, content_end_p - testp})) {
                     *p_out = lastp;
                     return true;
                 }
@@ -646,33 +656,39 @@ static bool strip_section(char *st, char *ed, char **link_out, char **section_ou
     }
     return false;
 }
-static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mode, struct namuast_inline *alias, struct namuast_inline* inl) {
+static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mode, namuast_inl_container *alias, struct namuast_inl_container* container, struct namugen_ctx *ctx) {
     char *link, *section;
     if (!strip_section(link_st, link_ed, &link, &section)) {
         link = unescape_link(dup_str(link_st, link_ed));
         section = NULL;
     }
 
+    bndstr bnd_link = {link, strlen(link)};
+    bndstr bnd_section = {0, 0};
+    if (section) {
+        bnd_section.str = section;
+        bnd_section.len = strlen(section);
+    }
+
     if  (*link == '/') {
         memmove(link, link + 1, strlen(link));
-        nm_inl_emit_lower_link(inl, link, alias, section);
+        nm_inl_emit_lower_link(container, ctx, bnd_link, alias, bnd_section);
     } else if (!strcmp(link, "../")) {
-        free(link);
-        nm_inl_emit_upper_link(inl, alias, section);
+        nm_inl_emit_upper_link(container, ctx, alias, bnd_section);
     } else {
-        nm_inl_emit_link(inl, link, compatible_mode, alias, section);
+        nm_inl_emit_link(container, ctx, bnd_link, compatible_mode, alias, bnd_section);
     }
+    free(link);
+    free(section);
 }
 
-void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inline* inl) {
+void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inl_container* container) {
     char *dummy;
-    struct namuast_inline* alias_subinl = NULL;
+    namuast_inl_container* alias_subinl = NULL;
     if (pipe_pos) {
         char *rpipe_pos = pipe_pos + 1;
         CONSUME_SPACETAB(rpipe_pos, border);
-        char* alias = unescape_link(dup_str(rpipe_pos, border));
-        alias_subinl = scn_parse_inline(alias, alias + strlen(alias), &dummy, ctx);
-        free(alias);
+        alias_subinl = scn_parse_inline(make_inl_container(), rpipe_pos, border, &dummy, ctx);
     }
     char* lpipe_pos = pipe_pos? pipe_pos : border;
     RCONSUME_SPACETAB(p, lpipe_pos);
@@ -714,46 +730,21 @@ void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatib
         // old-style alias
         if (!MET_EOF(testp, lpipe_pos)) {
             if (alias_subinl) {
-                namuast_remove_inline(alias_subinl);
+                RELEASE_NAMUAST(alias_subinl);
             }
-            alias_subinl = scn_parse_inline(testp, lpipe_pos, &dummy, ctx);
+            alias_subinl = scn_parse_inline(make_inl_container(), testp, lpipe_pos, &dummy, ctx);
         }
         if (use_wiki || use_dquote) {
-            emit_internal_link(link_st, link_ed, compatible_mode, alias_subinl, inl);
+            emit_internal_link(link_st, link_ed, compatible_mode, alias_subinl, container, ctx);
         } else {
-            nm_inl_emit_external_link(inl, dup_str(url_st, url_ed), alias_subinl);
+            bndstr url = {url_st, url_ed - url_st};
+            nm_inl_emit_external_link(container, url, alias_subinl);
         }
         return;
     }
 prefix_failure:
-    emit_internal_link(p, pipe_pos? pipe_pos : border, compatible_mode, alias_subinl, inl);
+    emit_internal_link(p, pipe_pos? pipe_pos : border, compatible_mode, alias_subinl, container, ctx);
 }
-
-static inline int get_span_type_from_double_mark(char mark) {
-    switch (mark) {
-        case '\'':
-            return nm_span_italic;
-        case '~':
-        case '-':
-            return nm_span_strike;
-        case '_':
-            return nm_span_underline;
-        case '^':
-            return nm_span_superscript;
-        case ',':
-            return nm_span_subscript;
-        default:
-            return nm_span_none;
-    }
-}
-
-char *supported_photo_exts[] = { 
-    "jpg",
-    "jpeg",
-    "png",
-    "gif",
-    NULL
-};
 
 static inline bool parse_list_header (char *p, char *border, char **content_st_out, int *list_type_out, int* indent_level_out) {
     int list_type;
@@ -806,23 +797,23 @@ static inline bool parse_list_header (char *p, char *border, char **content_st_o
     return is_list;
 }
 
-static inline struct namuast_inline* parse_multiline(char *p, char* border, struct namugen_ctx* ctx) {
-    struct namuast_inline* inl = scn_parse_inline(p, border, &p, ctx);
+static inline struct namuast_inl_container* parse_multiline(char *p, char* border, struct namugen_ctx* ctx) {
+    struct namuast_inl_container *container = make_inl_container();
+    scn_parse_inline(container, p, border, &p, ctx);
+
     UNTIL_NOT_REACHING1(p, border, '\n') {
         p++;
-        nm_inl_cat(inl, NULL, true);
+        inl_container_add_return(container, ctx);
     }
 
     while (!MET_EOF(p, border)) {
-        struct namuast_inline* next_inl = scn_parse_inline(p, border, &p, ctx);
-        nm_inl_cat(inl, next_inl, false);
-
+        scn_parse_inline(container, p, border, &p, ctx);
         UNTIL_NOT_REACHING1(p, border, '\n') {
             p++;
-            nm_inl_cat(inl, NULL, true);
+            inl_container_add_return(container, ctx);
         }
     }
-    return inl;
+    return container;
 }
 
 
@@ -873,8 +864,8 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
                 // verbose_log("emit heading%d, %s:%s \n", h_num, content_start_p, content_end_p);
                 CONSUME_IF_ENDL(lastp, border);
                 char *dummy;
-                struct namuast_inline *inl = scn_parse_inline(content_start_p, content_end_p, &dummy, ctx);
-                nm_emit_heading(ctx, h_num, inl);
+                struct namuast_inl_container *content = scn_parse_inline(make_inl_container(), content_start_p, content_end_p, &dummy, ctx);
+                nm_emit_heading(ctx, h_num, content);
                 return lastp;
             } else 
                 verbose_log("heading: %d != %d\n", h_num, cls_num);
@@ -909,7 +900,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
                 testp++;
             }
             CONSUME_SPACETAB(testp, border);
-            nm_emit_quotation(ctx, scn_parse_inline(testp, border, &testp, ctx));
+            nm_emit_quotation(ctx, scn_parse_inline(make_inl_container(), testp, border, &testp, ctx));
             CONSUME_IF_ENDL(testp, border);
             return testp;
         }
@@ -955,7 +946,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
             int stack_top = 0;
 
             struct namuast_list* result_list;
-#define MAKE_LIST(p, lt) namuast_make_list(lt, scn_parse_inline(p, border, &p, ctx))
+#define MAKE_LIST(p, lt) namuast_make_list(lt, scn_parse_inline(make_inl_container(), p, border, &p, ctx))
 #define FLUSH_STACK(ind, dangling_list) { \
     dangling_list = NULL; \
     while (stack_top > 0 && stack[stack_top - 1].indent_level > ind)  { \
@@ -964,7 +955,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
         if (stack_top > 0) { \
             struct namuast_list **p_sub_list = &stack[stack_top - 1].tail->sublist; \
             if (*p_sub_list) { \
-                namuast_remove_list(*p_sub_list); \
+                RELEASE_NAMUAST(*p_sub_list); \
             } \
             *p_sub_list = sublist; \
         } else { \
@@ -1026,7 +1017,7 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
     }
 
     char *retval;
-    nm_emit_inline(ctx, scn_parse_inline(p, border, &retval, ctx));
+    nm_emit_inline(ctx, scn_parse_inline(make_inl_container(), p, border, &retval, ctx));
     // verbose_log("inline chunk: ");
     // verbose_str(p, retval);
     return retval;

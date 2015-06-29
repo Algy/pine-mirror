@@ -5,7 +5,7 @@
 
 typedef struct {
     size_t num_chars;
-    struct namuast_inline* inl;
+    struct namuast_inl_container* container;
     struct namugen_ctx *ctx;
 } InlineScannerExtra;
 
@@ -30,7 +30,8 @@ not_a_rbrk [^\]\n]
 
 "[*"([^[\]\n]|("[".*"]")|("[[".*"]]"))*"]" {
     if (nm_in_footnote(yyextra->ctx)) {
-        nm_inl_emit_str(yyextra->inl, yytext, yyleng);
+        bndstr s = {yytext, yyleng};
+        nm_inl_emit_str(yyextra->container, s);
     } else {
         char *testp;
         char *border = yytext + yyleng - 1;
@@ -43,22 +44,21 @@ not_a_rbrk [^\]\n]
 
         CONSUME_SPACETAB(testp, border);
 
-        char *head;
-        if (extra_st == extra_ed) {
-            head = NULL;
-        } else
-            head = dup_str(extra_st, extra_ed);
+        bndstr head = {extra_st, extra_ed - extra_st};
 
         char *fnt_st_p;
         char *dummy;
 
         fnt_st_p = testp;
         nm_begin_footnote(yyextra->ctx);
-        struct namuast_inline *footnote = scn_parse_inline(testp, border, &dummy, yyextra->ctx);
+
+        struct namuast_inl_container *footnote_content = make_inl_container();  
+        scn_parse_inline(footnote_content, testp, border, &dummy, yyextra->ctx);
         nm_end_footnote(yyextra->ctx);
 
-        int id = nm_register_footnote(yyextra->ctx, footnote, head);
-        nm_inl_emit_footnote_mark(yyextra->inl, id, fnt_st_p, border - fnt_st_p);
+        int id = nm_register_footnote(yyextra->ctx, footnote_content, head);
+        bndstr s = {fnt_st_p, border - fnt_st_p};
+        nm_inl_emit_footnote_mark(yyextra->container, yyextra->ctx, id, s);
     }
     TRACK_NUM_CHARS;
 }
@@ -75,8 +75,7 @@ not_a_rbrk [^\]\n]
 
 "http""s"?"://"[^ \n]*("."{image_ext}|"?.jpg")("?"({image_option}"="{letter}+)("&"{image_option}"="{letter}+)*)? {
     char *border = yytext + yyleng;
-    char *width = NULL, *height = NULL;
-    char *url = NULL;
+    bndstr width = {0, 0}, height = {0, 0};
     int align = nm_align_none;
 
     char* url_st, *url_ed;
@@ -123,11 +122,9 @@ not_a_rbrk [^\]\n]
 
             // now set up options, though it's a hard wiring hack...
             if (EQSTR(key_st, key_ed, "width")) {
-                if (width) free(width);
-                width = dup_str(value_st, value_ed);
+                width = (bndstr){value_st, value_ed - value_st};
             } else if (EQSTR(key_st, key_ed, "height")) {
-                if (height) free(height);
-                height = dup_str(value_st, value_ed);
+                height = (bndstr){value_st, value_ed - value_st};
             } else if (EQSTR(key_st, key_ed, "align")) {
                 if (EQSTR(value_st, value_ed, "left")) {
                     align = nm_align_left;
@@ -145,14 +142,15 @@ not_a_rbrk [^\]\n]
             break;
         }
     }
-    url = dup_str(url_st, url_ed);
-    nm_inl_emit_image(yyextra->inl, url, width, height, align);
+
+    bndstr url = {url_st, url_ed - url_st};
+    nm_inl_emit_image(yyextra->container, url, width, height, align);
     TRACK_NUM_CHARS;
 }
 
 "{{{"(("}}"|"}"|"")[^}\n])*"}}}" {
     char *dummyp;
-    scn_parse_block(yytext, yytext + yyleng, &dummyp, &block_emitter_ops_inline, yyextra->ctx, yyextra->inl);
+    scn_parse_block(yytext, yytext + yyleng, &dummyp, &block_emitter_ops_inline, yyextra->ctx, yyextra->container);
     TRACK_NUM_CHARS;
 }
 
@@ -189,7 +187,8 @@ not_a_rbrk [^\]\n]
 
 
 {normal_char}+ {
-    nm_inl_emit_str(yyextra->inl, yytext, yyleng);
+    bndstr s = {yytext, yyleng};
+    nm_inl_emit_str(yyextra->container, s);
     TRACK_NUM_CHARS;
 }
 
@@ -202,7 +201,8 @@ not_a_rbrk [^\]\n]
 }
 
 . {
-    nm_inl_emit_str(yyextra->inl, yytext, 1);
+    bndstr s = {yytext, 1};
+    nm_inl_emit_str(yyextra->container, s);
     TRACK_NUM_CHARS;
 }
 
@@ -211,8 +211,9 @@ static void as_span(InlineScannerExtra* extra, char* st, char* ed, enum nm_span_
     char *dummy;
     CONSUME_SPACETAB(st, ed);
     RCONSUME_SPACETAB(st, ed);
-    struct namuast_inline *span = scn_parse_inline(st, ed, &dummy, extra->ctx);
-    nm_inl_emit_span(extra->inl, span, type);
+    struct namuast_inl_container *span_container = make_inl_container();
+    scn_parse_inline(span_container, st, ed, &dummy, extra->ctx);
+    nm_inl_emit_span(extra->container, span_container, type);
 }
 
 static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatible_mode) {
@@ -231,14 +232,14 @@ static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatib
     if (p < st)
         p = NULL;
     char* pipe_pos = p;
-    scn_parse_link_content(st, ed, pipe_pos, compatible_mode, extra->ctx, extra->inl);
+    scn_parse_link_content(st, ed, pipe_pos, compatible_mode, extra->ctx, extra->container);
 }
 
-struct namuast_inline* scn_parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx) { 
+namuast_inl_container *scn_parse_inline(namuast_inl_container *container, char *p, char* border, char **p_out, struct namugen_ctx* ctx) { 
     yyscan_t inline_scanner;
     InlineScannerExtra extra = {
         .ctx = ctx,
-        .inl = namuast_make_inline(ctx),
+        .container = container,
         .num_chars = 0
     };
     yylex_init_extra(&extra, &inline_scanner);
@@ -248,5 +249,5 @@ struct namuast_inline* scn_parse_inline(char *p, char* border, char **p_out, str
     yylex_destroy(inline_scanner);
 
     *p_out = p + extra.num_chars;
-    return extra.inl;
+    return container;
 }

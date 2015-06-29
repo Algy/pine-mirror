@@ -6,6 +6,8 @@
 #include "sds/sds.h"
 #include "list.h"
 
+void initmod_namugen();
+
 #define UNTIL_REACHING1(p, border, c1) while ((p) < (border) && *(p) != (c1))
 #define UNTIL_REACHING2(p, border, c1, c2) while ((p) < (border) && *(p) != (c1) && *(p) != (c2))
 #define UNTIL_REACHING3(p, border, c1, c2, c3) while ((p) < (border) && *(p) != (c1) && *(p) != (c2) && *(p) != (c3))
@@ -49,6 +51,11 @@
 #define PREFIXSTR(p, border, prefix) (!strncmp((p), (prefix), strlen(prefix)))
 #define CASEPREFIXSTR(p, border, prefix) (!strncasecmp((p), (prefix), strlen(prefix)))
 
+typedef struct {
+    char *str;
+    size_t len;
+} bndstr;
+
 
 enum nm_span_type {
     nm_span_none,
@@ -71,7 +78,7 @@ enum nm_align_type {
     nm_valign_bottom
 };
 
-enum {
+enum nm_list_type {
     nm_list_indent,
     nm_list_unordered,
     nm_list_ordered,
@@ -81,15 +88,257 @@ enum {
     nm_list_lower_roman,
 };
 
-typedef struct bndstr {
-    char* str;
+enum namuast_type {
+    namuast_type_container = 0,
+    namuast_type_return,
+    namuast_type_hr,
+    namuast_type_quotation,
+    namuast_type_block,
+    namuast_type_table,
+    namuast_type_list,
+    namuast_type_heading,
+    namuast_type_inline,
+    namuast_type_N
+};
+
+enum namuast_inltype {
+    namuast_inltype_str = 0,
+    namuast_inltype_link,
+    namuast_inltype_extlink,
+    namuast_inltype_image,
+    namuast_inltype_block,
+    namuast_inltype_fnt,
+    namuast_inltype_fnt_section,
+    namuast_inltype_toc,
+    namuast_inltype_span,
+    namuast_inltype_return,
+    namuast_inltype_container,
+    namuast_inltype_N
+};
+
+struct namuast_base;
+struct namuast_inline;
+
+typedef void (*namuast_dtor)(struct namuast_base *);
+/*
+typedef struct namuast_traverser {
+    void (*preorder[namuast_type_N])(struct namuast_traverser*, struct namuast_base *);
+    void (*postorder[namuast_type_N])(struct namuast_traverser*, struct namuast_base *);
+    void (*inl_preorder[namuast_inltype_N])(struct namuast_traverser*, struct namuast_inline*);
+    void (*inl_postorder[namuast_inltype_N])(struct namuast_traverser*, struct namuast_inline*);
+} namuast_traverser;
+*/
+
+struct {
+    namuast_dtor dtor;
+    // void (*traverse)(struct namuast_base *b, namuast_traverser *trav);
+} namuast_optbl[namuast_type_N];
+
+size_t namuast_sizetbl[namuast_type_N];
+size_t namuast_inl_sizetbl[namuast_inltype_N];
+typedef void (*namuast_inl_dtor)(struct namuast_inline *);
+struct {
+    namuast_inl_dtor dtor;
+     // void (*traverse)(struct namuast_inline *inl, namuast_traverser *trav);
+} namuast_inl_optbl[namuast_inltype_N];
+
+/*
+ * Paragraphic Objects
+ */
+typedef struct namuast_base {
+    enum namuast_type ast_type;
+    long refcount;
+} namuast_base;
+
+typedef struct namuast_container {
+    namuast_base _base;
+    namuast_base** children;
     size_t len;
-} bndstr;
-char* dup_str(char *st, char *ed);
+    size_t capacity;
+
+    struct list fnt_list;
+    struct namuast_heading* root_heading; // owns root of headings
+} namuast_container;
+
+typedef struct namuast_heading {
+    namuast_base _base;
+    struct namuast_inl_container *content;
+    sds section_name;
+
+    int seq;
+
+    int h_num;
+
+    struct list_elem elem;
+    struct list children;
+    struct namuast_heading* parent; // weak reference
+} namuast_heading;
+
+typedef struct namuast_return {
+    namuast_base _base;
+} namuast_return;
+
+typedef struct namuast_hr {
+    namuast_base _base;
+} namuast_hr;
+
+
+struct namuast_quotation {
+    namuast_base _base;
+    struct namuast_inl_container* content;
+};
+
+struct namuast_block {
+    namuast_base _base;
+    enum {
+        block_type_html,
+        block_type_raw
+    } block_type;
+    union {
+        sds html;
+        sds raw;
+    } data;
+};
+
+struct namuast_table {
+    namuast_base _base;
+    size_t max_col_count;
+    int align;
+    struct namuast_inl_container* caption;
+    char *bg_webcolor;
+    char* width; 
+    char* height; 
+    char* border_webcolor;
+    size_t row_count;
+    size_t row_size;
+    struct namuast_table_row *rows; // [row][col]
+};
+
+struct namuast_list {
+    namuast_base _base;
+    enum nm_list_type type;
+    struct namuast_inl_container* content;
+    struct namuast_list* sublist;
+    struct namuast_list* next;
+};
+
+/*
+ * Inline objects
+ */
+
+typedef struct namuast_inline {
+    namuast_base _base;
+    enum namuast_inltype inl_type;
+} namuast_inline;
+
+typedef struct namuast_inl_container {
+    namuast_inline _base;
+    namuast_inline** children;
+    size_t len;
+    size_t capacity;
+} namuast_inl_container;
+
+struct namuast_inl_str {
+    namuast_inline _base;
+    sds str;
+};
+
+struct namuast_inl_link {
+    namuast_inline _base;
+    sds name;
+    sds section; // may be NULL
+    namuast_inl_container* alias; // may be NULL
+};
+
+struct namuast_inl_extlink {
+    namuast_inline _base;
+    sds href;
+    namuast_inl_container* alias; // may be NULL
+};
+
+struct namuast_inl_image {
+    namuast_inline _base;
+    sds src;
+    sds width; // may be NULL
+    sds height; // may be NULL
+    enum nm_align_type align;
+};
+
+struct namuast_inl_block {
+    namuast_inline _base;
+    enum {
+        inlblock_type_color,
+        inlblock_type_highlight,
+        inlblock_type_raw
+    } inl_block_type;
+    union {
+        sds webcolor;
+        int highlight_level;
+        sds raw;
+    } data;
+    namuast_inl_container *content; // may be NULL
+};
+
+struct namuast_inl_fnt {
+    namuast_inline _base;
+
+    int id;
+    bool is_named;
+    union {
+        sds name;
+        int anon_num;
+    } repr;
+    namuast_inl_container* content;
+    sds raw;
+    struct list_elem elem;
+};
+
+struct namuast_inl_fnt_section {
+    namuast_inline _base;
+    int cur_footnote_id;
+};
+
+struct namuast_inl_toc {
+    namuast_inline _base;
+};
+
+struct namuast_inl_return {
+    namuast_inline _base;
+};
+
+struct namuast_inl_span {
+    namuast_inline _base;
+    enum nm_span_type span_type;
+    namuast_inl_container* content;
+};
+
+
+namuast_inl_container* make_inl_container();
+
+
+namuast_base* _init_namuast_base(namuast_base *base, int type);
+namuast_inline* _init_namuast_inl_base(namuast_inline *inl, int type);
+
+#define OBTAIN_NAMUAST(ast) ((struct namuast_base*)(ast))->refcount++
+#define _NEW_NAMUAST(type, typesize) _init_namuast_base((namuast_base*)calloc(typesize, 1), type)
+#define NEW_NAMUAST(type) _NEW_NAMUAST(type, namuast_sizetbl[type])
+#define NEW_INL_NAMUAST(inltype) _init_namuast_inl_base((namuast_inline *)_NEW_NAMUAST(namuast_type_inline, namuast_inl_sizetbl[inltype]), inltype);
+#define RELEASE_NAMUAST(ast) do { \
+    struct namuast_base* __base__ = (struct namuast_base*)(ast); \
+    if (--__base__->refcount <= 0) { \
+        namuast_dtor dtor = namuast_optbl[__base__->ast_type].dtor; \
+        if (dtor) dtor(__base__); \
+        free(__base__); \
+    } \
+} while (0)
+
+#define XRELEASE_NAMUAST(ast) do { if (ast) { RELEASE_NAMUAST(ast); } } while (0)
+
+bndstr to_bndstr(char *st, char *ed);
 
 struct namuast_inline;
 struct namuast_table_cell {
-    struct namuast_inline* content;
+    struct namuast_inl_container* content;
     int rowspan;
     int colspan;
     int align;
@@ -108,40 +357,14 @@ struct namuast_table_row {
     struct namuast_table_cell* cols;
 };
 
-struct namuast_table {
-    size_t max_col_count;
-
-    int align;
-    struct namuast_inline* caption;
-    char *bg_webcolor;
-    char* width; 
-    char* height; 
-    char* border_webcolor;
-    size_t row_count;
-    size_t row_size;
-    struct namuast_table_row *rows; // [row][col]
-};
-
-struct namuast_list {
-    int type;
-    struct namuast_inline* content;
-    struct namuast_list* sublist;
-    struct namuast_list* next;
-};
 
 
 struct namugen_ctx;
 
+struct namuast_list* namuast_make_list(int type, struct namuast_inl_container* content);
+void _namuast_dtor_list(struct namuast_base *);
+void _namuast_dtor_table(struct namuast_base *);
 
-char* find_webcolor_by_name(char *name);
-
-struct namuast_list* namuast_make_list(int type, struct namuast_inline* content);
-void namuast_remove_list(struct namuast_list* inl);
-struct namuast_table_cell* namuast_add_table_cell(struct namuast_table* table, struct namuast_table_row *row);
-struct namuast_table_row* namuast_add_table_row(struct namuast_table* table);
-void namuast_remove_table(struct namuast_table* table);
-
-void namugen_scan(struct namugen_ctx *ctx, char *buffer, size_t len);
 
 /*
  * Definitions of dynamic operations
@@ -149,23 +372,23 @@ void namugen_scan(struct namugen_ctx *ctx, char *buffer, size_t len);
 
 // IMPORTANT: 
 // As calling all dynamic operations, 
-// scanner give the ownership for char* and namuast_inline and relinquish its ownership.
+// scanner give the ownership for namuast_inl_container and relinquish its ownership.
 // Thus, memories which are given as arguments should be freed when operations are called, even if an operation returns false.
 // The only exceptions is when the field corresponding to an operation is NULL. In this case, scanner will internally free memory.
 struct nm_block_emitters {
     // NOTE: don't free outer_inl
-    bool (*emit_raw)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* raw);
-    bool (*emit_highlighted_block)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, int level);
-    bool (*emit_colored_block)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, struct namuast_inline* content, char* webcolor);
-    bool (*emit_html)(struct namugen_ctx* ctx, struct namuast_inline* outer_inl, char* html); 
+    bool (*emit_raw)(struct namugen_ctx* ctx, struct namuast_inl_container* container, bndstr raw);
+    bool (*emit_highlighted_block)(struct namugen_ctx* ctx, struct namuast_inl_container* outer_inl, struct namuast_inl_container* content, int level);
+    bool (*emit_colored_block)(struct namugen_ctx* ctx, struct namuast_inl_container* outer_inl, struct namuast_inl_container* content, bndstr webcolor);
+    bool (*emit_html)(struct namugen_ctx* ctx, struct namuast_inl_container* container, bndstr html); 
 };
 
 /*
  * Functins visible to .lex files
  */
-bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inline *outer_inl);
-void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inline* inl);
-struct namuast_inline* scn_parse_inline(char *p, char* border, char **p_out, struct namugen_ctx* ctx);
+bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitters* ops, struct namugen_ctx* ctx, struct namuast_inl_container* container);
+void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inl_container* container);
+namuast_inl_container* scn_parse_inline(namuast_inl_container *container, char *p, char* border, char **p_out, struct namugen_ctx* ctx);
 
 /*
  * User-defined emitters
@@ -176,95 +399,68 @@ extern struct nm_block_emitters block_emitter_ops_inline;
 extern struct nm_block_emitters block_emitter_ops_paragraphic;
 // compile-time operations
 
-void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inline* content);
-void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inline* inl);
+void nm_emit_heading(struct namugen_ctx* ctx, int h_num, struct namuast_inl_container* content);
+void nm_emit_inline(struct namugen_ctx* ctx, struct namuast_inl_container* container);
 void nm_emit_return(struct namugen_ctx* ctx);
 void nm_emit_hr(struct namugen_ctx* ctx, int hr_num);
 void nm_begin_footnote(struct namugen_ctx* ctx);
 void nm_end_footnote(struct namugen_ctx* ctx);
 bool nm_in_footnote(struct namugen_ctx* ctx);
-void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inline* inl);
+void nm_emit_quotation(struct namugen_ctx* ctx, struct namuast_inl_container* container);
 void nm_emit_table(struct namugen_ctx* ctx, struct namuast_table* tbl);
 void nm_emit_list(struct namugen_ctx* ctx, struct namuast_list* li);
 void nm_on_start(struct namugen_ctx* ctx);
 void nm_on_finish(struct namugen_ctx* ctx);
-int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inline* fnt, char* head);
+int nm_register_footnote(struct namugen_ctx* ctx, struct namuast_inl_container* fnt_content, bndstr head);
 
-struct namuast_inline* namuast_make_inline(struct namugen_ctx* ctx);
-void namuast_remove_inline(struct namuast_inline *inl);
+struct namuast_inl_container* namuast_make_inline(struct namugen_ctx* ctx);
+void inl_container_add_steal(struct namuast_inl_container* container, namuast_inline *src);
+void inl_container_add_return(struct namuast_inl_container* container, struct namugen_ctx *ctx);
 
-void nm_inl_emit_span(struct namuast_inline* inl, struct namuast_inline* span, enum nm_span_type type);
-void nm_inl_cat(struct namuast_inline* inl_dest, struct namuast_inline* inl_src, bool insert_br) ;
-void nm_inl_emit_str(struct namuast_inline* inl, char* s, size_t len);
-void nm_inl_emit_link(struct namuast_inline* inl, char *link, bool compatible_mode, struct namuast_inline *alias, char *section);
-void nm_inl_emit_upper_link(struct namuast_inline* inl, struct namuast_inline *alias, char *section);
-void nm_inl_emit_lower_link(struct namuast_inline* inl, char *link, struct namuast_inline *alias, char *section);
-void nm_inl_emit_external_link(struct namuast_inline* inl, char *link, struct namuast_inline *alias);
-void nm_inl_emit_image(struct namuast_inline* inl, char *url, char *width, char *height, int align);
-void nm_inl_emit_footnote_mark(struct namuast_inline* inl, int id, char* fnt_literal, size_t len);
+void nm_inl_emit_span(struct namuast_inl_container* container, struct namuast_inl_container* span, enum nm_span_type type);
+void nm_inl_emit_str(struct namuast_inl_container* container, bndstr s);
+void nm_inl_emit_link(struct namuast_inl_container* container, struct namugen_ctx *ctx, bndstr link, bool compatible_mode, struct namuast_inl_container *alias, bndstr section);
+void nm_inl_emit_upper_link(struct namuast_inl_container* container, struct namugen_ctx *ctx, struct namuast_inl_container *alias, bndstr section);
+void nm_inl_emit_lower_link(struct namuast_inl_container* container, struct namugen_ctx *ctx, bndstr link, struct namuast_inl_container *alias, bndstr section);
+void nm_inl_emit_external_link(struct namuast_inl_container* container, bndstr link, struct namuast_inl_container *alias);
+void nm_inl_emit_image(struct namuast_inl_container* container, bndstr url, bndstr width, bndstr height, int align);
+void nm_inl_emit_footnote_mark(struct namuast_inl_container* container, struct namugen_ctx* ctx, int id, bndstr fnt_literal);
 
 /*
  * Namugen 
  */
 
 // We believe href generated by this interface is escaped
-struct namugen_doc_itfc {
-    void (*documents_exist)(struct namugen_doc_itfc *, int argc, char** docnames, bool *results);
-    sds (*doc_href)(struct namugen_doc_itfc *, char *doc_name);
-};
 
 struct namugen_hook_itfc {
-    bool (*hook_fn_link)(struct namugen_hook_itfc *, struct namugen_ctx *ctx, struct namuast_inline *inl, char *fn);
-    bool (*hook_fn_call)(struct namugen_hook_itfc *, struct namugen_ctx *ctx, struct namuast_inline *inl, char *fn, char* arg);
+    bool (*hook_fn_link)(struct namugen_hook_itfc *, struct namugen_ctx *ctx, struct namuast_inl_container *container, bndstr fn);
+    bool (*hook_fn_call)(struct namugen_hook_itfc *, struct namugen_ctx *ctx, struct namuast_inl_container *container, bndstr fn, bndstr arg);
 };
 
-#define MAX_TOC_COUNT 100
-#define INITIAL_MAIN_BUF (4096*4)
-#define INITIAL_INTERNAL_LINKS 1024
-
-#define INLINE
-
-typedef struct {
-    sds buf;
-    int refcount;
-    bool is_lazy;
-} sdsbox;
-
-struct sdschunk {
-    sdsbox *box;
-    struct list_elem elem;
-};
-
-
-struct namugen_ctx {
+typedef struct namugen_ctx {
     bool is_in_footnote;
     int last_footnote_id;
     int last_anon_fnt_num;
-    struct list fnt_list;
 
-    struct heading* root_heading; // sentinel-heading
-
-    sdsbox* toc_positions[MAX_TOC_COUNT];
-    int toc_count;
-
-    struct list internal_link_list;
-    int internal_link_count;
-
-    struct list main_chunk_list;
-    sds main_fast_buf;
-
-    struct namugen_doc_itfc *doc_itfc;
     struct namugen_hook_itfc *namugen_hook_itfc;
 
+    struct namuast_container *result_container;
     sds cur_doc_name;
 
-    struct list inl_pool;
-}; 
+    /*
+     * Constants
+     */
+    struct namuast_hr *shared_hr;
+    struct namuast_return *shared_return;
+    struct namuast_inl_return *shared_inl_return;
+    struct namuast_inl_toc *shared_toc;
+} namugen_ctx; 
 
 
-struct namugen_ctx* namugen_make_ctx(char* cur_doc_name, struct namugen_doc_itfc* doc_itfc, struct namugen_hook_itfc* namugen_hook_itfc);
-sds namugen_ctx_flush_main_buf(struct namugen_ctx* ctx);
-void namugen_remove_ctx(struct namugen_ctx* ctx);
+void namugen_init(namugen_ctx* ctx, const char* cur_doc_name, struct namugen_hook_itfc* namugen_hook_itfc);
+void namugen_scan(struct namugen_ctx *ctx, char *buffer, size_t len);
+namuast_container* namugen_obtain_ast(struct namugen_ctx *ctx);
+void namugen_remove(namugen_ctx* ctx);
 
 
 #endif // !_NAMUGEN_H

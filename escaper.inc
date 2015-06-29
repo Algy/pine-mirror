@@ -7,11 +7,8 @@
 #ifndef NULL
 #  define NULL ((void *)0)
 #endif
-static __attribute__((unused)) sds escape_html_content(char* content) {
-    size_t len = strlen(content);
-    sds ret = sdsnewlen(NULL, len + len / 2);
-    sdsupdatelen(ret);
 
+static __attribute__((unused)) sds sdscat_escape_html_content(sds ret, char* content) {
     char *p;
     char *safe_chunk_st = content;
 
@@ -52,6 +49,14 @@ static __attribute__((unused)) sds escape_html_content(char* content) {
     return ret;
 }
 
+static __attribute__((unused)) sds escape_html_content(char* content) {
+    size_t len = strlen(content);
+    sds ret = sdsnewlen(NULL, len + len / 2);
+    sdsupdatelen(ret);
+    return sdscat_escape_html_content(ret, content);
+}
+
+
 static inline __attribute__((unused)) sds append_html_content_char(sds appendee, char ch) {
     char *esc_entity = NULL;
     switch (ch) {
@@ -80,10 +85,7 @@ static inline __attribute__((unused)) sds append_html_content_char(sds appendee,
         return sdscatlen(appendee, &ch, 1);
 }
 
-
-static __attribute__((unused)) sds escape_html_attr(char* attr) {
-    sds ret = sdsnewlen(NULL, strlen(attr) * 2);
-    sdsupdatelen(ret);
+static sds sdscat_escape_html_attr(sds ret, char *attr) {
     char *p;
 
     for (p = attr; *p; p++) {
@@ -110,6 +112,12 @@ static __attribute__((unused)) sds escape_html_attr(char* attr) {
         }
     }
     return ret;
+}
+
+static __attribute__((unused)) sds escape_html_attr(char* attr) {
+    sds ret = sdsnewlen(NULL, strlen(attr) * 2);
+    sdsupdatelen(ret);
+    return sdscat_escape_html_attr(ret, attr);
 }
 
 #define __TO_HEX__(x) (((x) >= 10)? (((x) - 10) + 'A'):((x) + '0'))

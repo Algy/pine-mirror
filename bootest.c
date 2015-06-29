@@ -4,8 +4,9 @@
 #include <time.h>
 
 #include "namugen.h"
+#include "htmlgen.h"
 
-void dummy_docs_exist(struct namugen_doc_itfc* x, int argc, char** docnames, bool* results) {
+static void dummy_docs_exist(struct namugen_doc_itfc* x, int argc, char** docnames, bool* results) {
     int idx;
     for (idx = 0; idx < argc; idx++) {
         results[idx] = false;
@@ -37,6 +38,9 @@ struct namugen_hook_itfc hook = {
 };
 
 int main(int argc, char** argv) {
+    initmod_namugen();
+    initmod_htmlgen();
+
     if (argc < 2) {
         return 1;
     }
@@ -52,18 +56,16 @@ int main(int argc, char** argv) {
     fread(buffer, 1, filesize + 1, fp);
     buffer[filesize] = 0;
 
-    struct namugen_ctx* ctx = namugen_make_ctx("MyDocument", &doc_itfc, &hook);
-
+    sds result = sdsnewlen(NULL, filesize * 2);
+    sdsupdatelen(result);
     clock_t clock_st = clock();
-    namugen_scan(ctx, buffer, filesize);
+    result = htmlgen_generate_directly("Dummy", buffer, filesize, &hook, &doc_itfc, result);
     clock_t clock_ed = clock();
     double us = (((double) (clock_ed - clock_st)) / CLOCKS_PER_SEC) * 1000. * 1000.;
 
-    sds result = namugen_ctx_flush_main_buf(ctx);
     printf("<!doctype html><meta charset='utf-8'><link ref='stylesheet' href='https://namu.wiki/css/wiki.css?1430916909'> <div class='wiki-main'><article>%s</article></div>\n", result);
     sdsfree(result);
     printf("generated in %.2lf us\n", us);
-    namugen_remove_ctx(ctx);
     free(buffer);
     fclose(fp);
     return 0;

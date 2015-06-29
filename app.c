@@ -4,7 +4,7 @@
 #include "pine.h"
 #include "data.h"
 #include "hiredis/hiredis.h"
-#include "namugen.h"
+#include "htmlgen.h"
 
 #define mysql_fatal(mysql) do {\
     uwsgi_log("(MYSQL)%s at [%s:%d]\n", mysql_error(mysql), __FILE__, __LINE__); \
@@ -99,15 +99,14 @@ static sds render_page(ConnCtx *ctx, Document *doc, char *docname_prefix) {
        .docname_prefix = docname_prefix
     };
 
-    struct namugen_ctx* namugen = namugen_make_ctx(doc->name, &my_itfc.vtbl, &todo_hook);
+    sds result = sdsnewlen(NULL, sdslen(doc->source) * 2);
+
     clock_t clock_st = clock();
-    namugen_scan(namugen, doc->source, sdslen(doc->source));
+    result = htmlgen_generate_directly(doc->name, doc->source, sdslen(doc->source), &todo_hook, &my_itfc.vtbl, result);
     clock_t clock_ed = clock();
     double ms = (((double) (clock_ed - clock_st)) / CLOCKS_PER_SEC) * 1000.;
 
-    sds result = namugen_ctx_flush_main_buf(namugen);
     result = sdscatprintf(result, "<p class='gen-ms'>generated in %.2lfms</p>", ms);
-    namugen_remove_ctx(namugen);
     return result;
 }
 
@@ -165,6 +164,9 @@ static void uwsgi_coroutine_write_hook(redisContext *c) {
 }
 
 void pine_init(int async) {
+    initmod_htmlgen();
+    initmod_namugen();
+
     redisCoroutineReadHook = uwsgi_coroutine_read_hook;
     redisCoroutineWriteHook = uwsgi_coroutine_write_hook;
     uwsgi_log("**Starting Pine using %d async worker(s)**\n", async);
