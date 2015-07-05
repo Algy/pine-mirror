@@ -16,3 +16,6 @@
 [submodule "mariadb-connector-c"]
 	path = mariadb-connector-c
 	url = https://github.com/MariaDB/mariadb-connector-c.git
+[submodule "parson"]
+	path = parson
+	url = https://github.com/kgabis/parson
