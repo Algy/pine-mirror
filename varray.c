@@ -57,8 +57,6 @@ varray_push(varray *array, void *data)
     size_t toallocate;
     size_t size = sizeof(void*);
 
-    if (data == NULL) return;
-
     if (array->allocated <= array->used) {
         toallocate = array->allocated == 0 ? size : (array->allocated * 2);
         array->memory = realloc(array->memory, sizeof(void *) * toallocate);
