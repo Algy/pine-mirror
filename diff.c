@@ -319,7 +319,7 @@ int diff(const void *a, int aoff, int n,
          struct diff_edit **ses_ret, int *ses_n_ret) {
     int d, x, y;
 
-    dmax = dmax < 0? dmax : INT_MAX;
+    dmax = dmax >= 0? dmax : INT_MAX;
     const int initial_capacity = dmax > 128? dmax: 128;
     int v_size = 8 * (m + n + 1);
     struct _ctx ctx = {
