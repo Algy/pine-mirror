@@ -109,8 +109,9 @@ static int _find_middle_snake(const void *a, int aoff, int n,
     for (d = 0; d <= mid; d++) {
         int k, x, y;
 
-        if ((2 * d - 1) >= ctx->dmax) {
-            return ctx->dmax;
+        // EXPERIMENTIAL
+        if ((2 * d - 1) > ctx->dmax) {
+            return -1;
         }
 
         // going ahead
@@ -254,8 +255,8 @@ static int _ses(const void *a, int aoff, int n,
         d = _find_middle_snake(a, aoff, n, b, boff, m, ctx, &ms);
         if (d == -1) {
             return -1;
-        } else if (d >= ctx->dmax) {
-            return ctx->dmax;
+        } else if (d > ctx->dmax) {
+            return -1;
         } else if (ctx->ses == NULL) {
             return d;
         } else if (d > 1) {

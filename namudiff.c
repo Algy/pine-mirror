@@ -460,6 +460,42 @@ static void add_matched_nodes(DiffNodeConnection *conn, DiffNode *old_node, Diff
     }
 }
 
+static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, struct diff_edit **node_ed_ret, int *node_ed_len_ret) {
+    struct node_diff_ctx ctx = {
+        .old_node = old_node,
+        .new_node = new_node,
+        .option = option
+    };
+
+    enum diff_node_type node_type = new_node->type;
+
+    int old_children_len = (int)varray_length(old_node->children);
+    int new_children_len = (int)varray_length(new_node->children);
+
+    int dmax;
+    switch (option->public_option.dmax_algorithm) {
+    case diff_dmax_none:
+        dmax = INT_MAX;
+        break;
+    case diff_dmax_counter:
+        dmax = option->public_option.dmax_arg[node_type].i;
+        break;
+    case diff_dmax_percentage:
+        dmax = (int)(option->public_option.dmax_arg[node_type].d * MIN(old_children_len, new_children_len));
+        break;
+    default:
+        assert (0); // NON REACHABLE
+    }
+
+    int diff_distance;
+    if (dmax > 0) {
+        diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, node_idx_fn, node_cmp_fn, &ctx, dmax, node_ed_ret, node_ed_len_ret);
+    } else {
+        diff_distance = -1;
+    }
+    return diff_distance;
+}
+
 static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, DiffNodeConnection **conn_ret) {
     assert (new_node->type == old_node->type);
     assert (new_node->type != diff_node_type_word);
@@ -475,10 +511,10 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
 
     UTF8IndexHint *old_hint = &option->old_hint;
     UTF8IndexHint *new_hint = &option->new_hint;
-    if (node_type == diff_node_type_sentence) {
-        size_t old_buf_utf8_len = old_node->source_len;
-        size_t new_buf_utf8_len = new_node->source_len;
+    size_t old_buf_utf8_len = old_node->source_len;
+    size_t new_buf_utf8_len = new_node->source_len;
 
+    if (node_type != diff_node_type_article) {
         struct txt_diff_ctx ctx = {
             .old_buf = old_node->source_revision->buffer,
             .old_buf_size = old_node->source_revision->buffer_size,
@@ -493,7 +529,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
         int dmax;
         switch (option->public_option.dmax_algorithm) {
         case diff_dmax_none:
-            dmax = INT_MAX;
+            dmax = (old_buf_utf8_len + new_buf_utf8_len) / 2;
             break;
         case diff_dmax_counter:
             dmax = option->public_option.dmax_arg[node_type].i;
@@ -510,39 +546,8 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
             diff_distance = -1;
         if (diff_distance < 0)
             goto error;
-    } else {
-        struct node_diff_ctx ctx = {
-            .old_node = old_node,
-            .new_node = new_node,
-            .option = option
-        };
-
-        int old_children_len = (int)varray_length(old_node->children);
-        int new_children_len = (int)varray_length(new_node->children);
-
-        int dmax;
-        switch (option->public_option.dmax_algorithm) {
-        case diff_dmax_none:
-            dmax = INT_MAX;
-            break;
-        case diff_dmax_counter:
-            dmax = option->public_option.dmax_arg[node_type].i;
-            break;
-        case diff_dmax_percentage:
-            dmax = (int)(option->public_option.dmax_arg[node_type].d * MIN(old_children_len, new_children_len));
-            break;
-        default:
-            assert (0); // NON REACHABLE
-        }
-
-        if (dmax > 0) {
-            diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, node_idx_fn, node_cmp_fn, &ctx, dmax, &ed, &ed_len);
-        } else {
-            diff_distance = -1;
-        }
-        if (diff_distance < 0)
-            goto error;
     }
+
     switch (option->public_option.coherency_algorithm) {
     case diff_coherency_none:
         break;
@@ -575,9 +580,14 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
                 }
             }
         } else {
+            struct diff_edit *node_ed;
+            int node_ed_len;
+            int node_diff_distance;
+            if ((node_diff_distance = nodewise_diff(old_node, new_node, option, &node_ed, &node_ed_len)) == -1)
+                goto error;
             size_t ins_off = 0;
-            for (idx = 0; idx < ed_len; idx++) {
-                struct diff_edit *e = &ed[idx];
+            for (idx = 0; idx < node_ed_len; idx++) {
+                struct diff_edit *e = &node_ed[idx];
                 switch (e->op) {
                 case DIFF_MATCH:
                     add_matched_nodes(result, old_node, new_node, option, e->off, ins_off, e->len);
@@ -590,6 +600,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
                     break;
                 }
             }
+            free(node_ed);
         }
         *conn_ret = result;
     }
