@@ -5,6 +5,9 @@ inlinelexer.yy.c: inlinelexer.l
 bootest: scanner.c bootest.c namugen.c htmlgen.c sds/sds.c list.c inlinelexer.yy.c htmlgen.c varray.c
 	cc -O3 -Wno-extended-offsetof -DVERBOSE -pedantic -g scanner.c inlinelexer.yy.c list.c bootest.c namugen.c sds/sds.c htmlgen.c varray.c -o test.out
 
+difftest: parson/parson.c sds/sds.c diff.c namudiff.c
+	cc -D SIMPLE_NAMUDIFF_PROGRAM -Wall -g -o difftest parson/parson.c sds/sds.c varray.c diff.c namudiff.c 
+
 app.dylib: entry.c utils.c uwsgi.h app.c sds/sds.c app.c data.c scanner.c inlinelexer.yy.c namugen.c htmlgen.c varray.c list.c lz4/lib/lz4.c lz4/lib/lz4hc.c
 	cc -O3 -fPIC -g -shared -undefined dynamic_lookup -I mariadb-connector-c/include -I sds/ -I hiredis/ -I hiredis/ -L hiredis/ -L mariadb-connector-c/libmariadb -lmariadb -lhiredis -o app.dylib `uwsgi --cflags` -Wno-error entry.c utils.c sds/sds.c app.c data.c scanner.c inlinelexer.yy.c namugen.c htmlgen.c varray.c list.c lz4/lib/lz4.c lz4/lib/lz4hc.c
 
@@ -34,3 +37,4 @@ clean:
 	rm -rf compression_test
 	rm -f mariadb_test
 	rm -f data_test
+	rm -f difftest

@@ -1,6 +1,5 @@
 /* diff - compute a shortest edit script (SES) given two sequences
- * Copyright (c) 2004 Michael B. Allen <mba2000 ioplex.com>
- *
+ * Copyright (c) 2004 Michael B. Allen <mba2000 ioplex.com> *
  * The MIT License
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -59,6 +58,7 @@ struct _ctx {
     int ses_capacity;
     int si;
     int dmax;
+    int v_size;
 };
 
 struct middle_snake {
@@ -78,12 +78,16 @@ static inline void _setv(struct _ctx *ctx, int k, int reverse, int val) {
     //           ^: reverse v for negative k
     // [ |k|=0     ] [ |k|=1 ] ...
     j = k <= 0 ? -k * 4 + reverse : k * 4 + (reverse - 2);
+    assert (j >= 0);
+    assert (j < ctx->v_size);
     ctx->buf[j] = val;
 }
 
 static inline int _v(struct _ctx *ctx, int k, int reverse) {
     int j;
     j = k <= 0 ? -k * 4 + reverse : k * 4 + (reverse - 2);
+    assert (j >= 0);
+    assert (j < ctx->v_size);
 
     return ctx->buf[j];
 }
@@ -313,20 +317,21 @@ int diff(const void *a, int aoff, int n,
          const void *b, int boff, int m,
          diff_idx_fn idx, diff_cmp_fn cmp, void *context, int dmax,
          struct diff_edit **ses_ret, int *ses_n_ret) {
-    int result;
     int d, x, y;
 
     dmax = dmax < 0? dmax : INT_MAX;
     const int initial_capacity = dmax > 128? dmax: 128;
+    int v_size = 8 * (m + n + 1);
     struct _ctx ctx = {
         .idx = idx,
         .cmp = cmp,
         .context = context,
-        .buf = calloc(4 * (m + n + 1), sizeof(int)), // packed V array which has at most 4*(M+N + 1) rooms
+        .buf = calloc(v_size, sizeof(int)), 
         .ses = calloc(initial_capacity, sizeof(struct diff_edit)),
         .si = 0,
         .ses_capacity = initial_capacity,
-        .dmax = dmax
+        .dmax = dmax,
+        .v_size = v_size
     };
 
     if (!idx != !cmp) { /* ensure both NULL or both non-NULL */
