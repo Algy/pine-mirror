@@ -1007,7 +1007,7 @@ static void print_old(DiffNodeConnection *conn, size_t old_idx, UTF8IndexHint *o
     }
     const char *p;
     for (p = st; p < ed; p++) {
-        if (*p == '\n')
+        if (str_mode && *p == '\n')
             printf("\\n");
         else
             putchar(*p);
