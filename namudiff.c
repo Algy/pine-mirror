@@ -321,6 +321,11 @@ static void parse_sentence(DiffNode *paragraph, const Revision *rev, bool sep_dp
             acc_offset++;
             str_length++;
             if (c == '.') {
+                while (p < border && *p == '.') {
+                    acc_offset++;
+                    str_length++;
+                    p++;
+                }
                 break;
             }
         }
@@ -357,12 +362,19 @@ DiffNode* DiffNode_parse(const Revision *rev) {
             } 
             acc_offset++;
             str_length++;
-            if (c == '\n')
+            if (c == '\n') {
+                while (p < border && *p == '\n') {
+                    acc_offset++;
+                    str_length++;
+                    p++;
+                }
                 break;
+            }
         }
         const char *pend = p;
         if (pstart < pend) {
             DiffNode *paragraph = DiffNode_new(diff_node_type_paragraph, rev->info, rev, cur_offset, str_length);
+
             parse_sentence(paragraph, rev, true, cur_offset, pstart, pend - pstart);
             DiffNode_add_child(article, paragraph);
             DiffNode_release(paragraph);
@@ -487,7 +499,7 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
         assert (0); // NON REACHABLE
     }
 
-    int diff_distance;
+    int diff_distance = 0;
     if (dmax > 0) {
         diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, node_idx_fn, node_cmp_fn, &ctx, dmax, node_ed_ret, node_ed_len_ret);
     } else {
@@ -585,6 +597,8 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
             int node_diff_distance;
             if ((node_diff_distance = nodewise_diff(old_node, new_node, option, &node_ed, &node_ed_len)) == -1)
                 goto error;
+
+            result->diff_distance = node_diff_distance;
             size_t ins_off = 0;
             for (idx = 0; idx < node_ed_len; idx++) {
                 struct diff_edit *e = &node_ed[idx];
@@ -1018,7 +1032,7 @@ static void print_old(DiffNodeConnection *conn, size_t old_idx, UTF8IndexHint *o
     }
     const char *p;
     for (p = st; p < ed; p++) {
-        if (str_mode && *p == '\n')
+        if (*p == '\n')
             printf("\\n");
         else
             putchar(*p);
