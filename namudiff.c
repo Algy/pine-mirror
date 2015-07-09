@@ -14,6 +14,18 @@ typedef struct {
     size_t index;
 } UTF8IndexHint;
 
+static bool utf8_set(char b[6], int32_t c) {
+    if (c<0x80) *b++=c;
+    else if (c<0x800) *b++=192+c/64, *b++=128+c%64;
+    else if (c-0xd800u<0x800) goto error;
+    else if (c<0x10000) *b++=224+c/4096, *b++=128+c/64%64, *b++=128+c%64;
+    else if (c<0x110000) *b++=240+c/262144, *b++=128+c/4096%64, *b++=128+c/64%64, *b++=128+c%64;
+    else goto error;
+    return true;
+error:
+    return false;
+}
+
 static inline int32_t iter_utf8(const char* utf8, const char* end, const char **next_p_ret) {
     int32_t c;
     const char* p = utf8;
@@ -197,9 +209,27 @@ void RevisionInfo_free(RevisionInfo *ptr) {
 
 Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size) {
     Revision* rev = malloc(sizeof(Revision));
-
     rev->info = revinfo;
     rev->buffer = buffer;
+    if (buffer) {
+        size_t idx;
+        size_t uni_len = utf8_count(buffer, buffer_size, NULL);
+        rev->uni_buffer = malloc((uni_len + 1) * sizeof(int32_t));
+        const char *p = buffer;
+        for (idx = 0; idx < uni_len; idx++) {
+            int32_t c;
+            if ((c = iter_utf8(p, buffer + buffer_size, &p)) == -1) {
+                c = '?';
+                p++;
+            }
+            rev->uni_buffer[idx] = c;
+        }
+        rev->uni_buffer[uni_len] = 0;
+        rev->uni_len = uni_len;
+    } else {
+        rev->uni_buffer = NULL;
+        rev->uni_len = 0;
+    }
     rev->buffer_size = buffer_size;
     return rev;
 }
@@ -209,6 +239,8 @@ RevisionInfo *RevisionInfo_duplicate(RevisionInfo *info) {
 }
 
 void Revision_free(Revision *rev, bool remove_revision_info) {
+    if (rev->uni_buffer)
+        free(rev->uni_buffer);
     if (rev->buffer)
         free(rev->buffer);
     if (remove_revision_info) {
@@ -403,24 +435,20 @@ static int idt_idx_fn(const void* data, int offset, void* context) {
 }
 
 struct txt_diff_ctx {
-    const char *old_buf;
-    size_t old_buf_size;
-    const char *new_buf;
-    size_t new_buf_size;
+    const int32_t *old_uni_buf;
+    const int32_t *new_uni_buf;
     size_t old_node_offset, new_node_offset;
-    UTF8IndexHint *old_hint, *new_hint;
 };
 
 static int txt_cmp_fn(int idxA, int idxB, void *context) {
     struct txt_diff_ctx *ctx = context;
-    int32_t a = utf8_get(ctx->old_buf, ctx->old_buf_size, ctx->old_node_offset + (size_t)idxA, ctx->old_hint);
-    int32_t b = utf8_get(ctx->new_buf, ctx->new_buf_size, ctx->new_node_offset + (size_t)idxB, ctx->new_hint);
+    int32_t a = ctx->old_uni_buf[ctx->old_node_offset + (size_t)idxA];
+    int32_t b = ctx->new_uni_buf[ctx->new_node_offset + (size_t)idxB];
     return (a > b)? 1 : ((a < b)? -1 : 0);
 }
 
 typedef struct {
     DiffOption public_option;
-    UTF8IndexHint old_hint, new_hint;
 } DiffInternalOption;
 
 struct node_diff_ctx {
@@ -521,21 +549,14 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
     DiffNodeConnection *result = NULL;
 
 
-    UTF8IndexHint *old_hint = &option->old_hint;
-    UTF8IndexHint *new_hint = &option->new_hint;
     size_t old_buf_utf8_len = old_node->source_len;
     size_t new_buf_utf8_len = new_node->source_len;
-
     if (node_type != diff_node_type_article) {
         struct txt_diff_ctx ctx = {
-            .old_buf = old_node->source_revision->buffer,
-            .old_buf_size = old_node->source_revision->buffer_size,
+            .old_uni_buf = old_node->source_revision->uni_buffer,
+            .new_uni_buf = new_node->source_revision->uni_buffer,
             .old_node_offset = old_node->source_offset,
-            .new_buf = new_node->source_revision->buffer,
-            .new_buf_size = new_node->source_revision->buffer_size,
-            .new_node_offset = new_node->source_offset,
-            .old_hint = old_hint,
-            .new_hint = new_hint,
+            .new_node_offset = new_node->source_offset
         };
 
         int dmax;
@@ -661,8 +682,6 @@ error:
 DiffNodeConnection* DiffNode_diff(DiffNode *old_node, DiffNode *new_node, const DiffOption *option) {
     DiffInternalOption internal_option = {
         .public_option = *option,
-        .old_hint = {old_node->source_revision->buffer, 0},
-        .new_hint = {new_node->source_revision->buffer, 0}
     };
     DiffNodeConnection* conn;
     diff_node(old_node, new_node, &internal_option, &conn);
@@ -1018,41 +1037,51 @@ error:
 #include <stdio.h>
 #include "sds/sds.h"
 
-static void print_old(DiffNodeConnection *conn, size_t old_idx, UTF8IndexHint *old_hint) {
+static void print_old(DiffNodeConnection *conn, size_t old_idx) {
     bool str_mode = conn->node_type == diff_node_type_sentence;
-    const char *buffer = conn->del_node->source_revision->buffer;
-    size_t buffer_size = conn->del_node->source_revision->buffer_size;
+    const int32_t *uni_buffer = conn->del_node->source_revision->uni_buffer;
     printf("\x1b[31;4m");
-    const char *st, *ed;
+    const int32_t *st, *ed;
     if (str_mode) {
-        utf8_get_range(buffer, buffer_size, conn->del_node->source_offset + old_idx, 1, old_hint, &st, &ed);
+        st = uni_buffer + conn->del_node->source_offset + old_idx;
+        ed = st + 1;
     } else {
         DiffNode *oc = varray_get(conn->del_node->children, old_idx);
-        utf8_get_range(buffer, buffer_size, oc->source_offset, oc->source_len, old_hint, &st, &ed);
+        st = uni_buffer + oc->source_offset;
+        ed = st + oc->source_len;
     }
-    const char *p;
+    const int32_t *p;
     for (p = st; p < ed; p++) {
         if (*p == '\n')
             printf("\\n");
-        else
-            putchar(*p);
+        else {
+            char str[5] = {0, };
+            utf8_set(str, *p);
+            printf("%s", str);
+        }
     }
     printf("\x1b[0m");
 }
 
-static void print_new(DiffNodeConnection *conn, size_t new_idx, UTF8IndexHint *new_hint) {
+static void print_new(DiffNodeConnection *conn, size_t new_idx) {
     bool str_mode = conn->node_type == diff_node_type_sentence;
-    const char *buffer = conn->ins_node->source_revision->buffer;
-    size_t buffer_size = conn->ins_node->source_revision->buffer_size;
+    const int32_t *uni_buffer = conn->ins_node->source_revision->uni_buffer;
     printf("\x1b[32;4m");
-    const char *st, *ed;
+    const int32_t *st, *ed;
     if (str_mode) {
-        utf8_get_range(buffer, buffer_size, conn->ins_node->source_offset + new_idx, 1, new_hint, &st, &ed);
+        st = uni_buffer + conn->ins_node->source_offset + new_idx;
+        ed = st + 1;
     } else {
         DiffNode *nc = varray_get(conn->ins_node->children, new_idx);
-        utf8_get_range(buffer, buffer_size, nc->source_offset, nc->source_len, new_hint, &st, &ed);
+        st = uni_buffer + nc->source_offset;
+        ed = st + nc->source_len;
     }
-    fwrite(st, 1, ed - st, stdout);
+    const int32_t *p;
+    for (p = st; p < ed; p++) {
+        char str[5] = {0, };
+        utf8_set(str, *p);
+        printf("%s", str);
+    }
     printf("\x1b[0m");
 }
 
@@ -1067,19 +1096,19 @@ static void print_conn(DiffNodeConnection *conn, UTF8IndexHint *old_hint, UTF8In
         if (match_idx >= match_len) {
             if (str_mode) {
                 if (old_idx < conn->del_node->source_len) {
-                    print_old(conn, old_idx, old_hint);
+                    print_old(conn, old_idx);
                     old_idx++;
                 } else if (new_idx < conn->ins_node->source_len) {
-                    print_new(conn, new_idx, new_hint);
+                    print_new(conn, new_idx);
                     new_idx++;
                 } else
                     break;
             } else {
                 if (old_idx < varray_length(conn->del_node->children)) {
-                    print_old(conn, old_idx, old_hint);
+                    print_old(conn, old_idx);
                     old_idx++;
                 } else if (new_idx < varray_length(conn->ins_node->children)) {
-                    print_new(conn, new_idx, new_hint);
+                    print_new(conn, new_idx);
                     new_idx++;
                 } else
                     break;
@@ -1087,16 +1116,20 @@ static void print_conn(DiffNodeConnection *conn, UTF8IndexHint *old_hint, UTF8In
         } else {
             DiffMatch *match = varray_get(conn->diff_matches, match_idx);
             if (old_idx < match->del_off) {
-                print_old(conn, old_idx, old_hint);
+                print_old(conn, old_idx);
                 old_idx++;
             } else if (new_idx < match->ins_off) {
-                print_new(conn, new_idx, new_hint);
+                print_new(conn, new_idx);
                 new_idx++;
             } else {
                 if (str_mode) {
-                    const char *st, *ed;
-                    utf8_get_range(conn->del_node->source_revision->buffer, conn->del_node->source_revision->buffer_size, conn->del_node->source_offset + match->del_off, match->len, old_hint, &st, &ed);
-                    fwrite(st, 1, ed - st, stdout);
+                    int idx;
+                    for (idx = 0; idx < match->len; idx++) {
+                        uint32_t c = conn->del_node->source_revision->uni_buffer[conn->del_node->source_offset + match->del_off + idx];
+                        char str[5] = {0, };
+                        utf8_set(str, c);
+                        printf("%s", str);
+                    }
                 } else {
                     print_conn(match->subconn, old_hint, new_hint);
                 }
@@ -1203,7 +1236,7 @@ int main(int argc, char **argv) {
     DiffOption opt = {.dmax_algorithm = diff_dmax_none, .coherency_algorithm = diff_coherency_none};
     DiffNodeConnection *conn = Revision_diff(old_rev, new_rev, &opt);
     if (!conn) {
-        printf("Cannot differnciate two revisions\n");
+        printf("Cannot differntiate two revisions\n");
         goto error;
     }
     /*

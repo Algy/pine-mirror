@@ -1,6 +1,7 @@
 #ifndef _DIFF_H
 #define _DIFF_H
 #include <stdbool.h>
+#include <wchar.h>
 
 #include "varray.h"
 #include "parson/parson.h"
@@ -70,6 +71,8 @@ typedef struct {
 
 typedef struct {
     RevisionInfo* info;
+    int32_t *uni_buffer;
+    size_t uni_len;
     char *buffer;
     size_t buffer_size; // the number of size of buffer (in bytes)
 } Revision;
