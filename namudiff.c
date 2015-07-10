@@ -8,6 +8,7 @@
 
 #define MIN(a, b) ((a) < (b)? (a) : (b))
 #define MAX(a, b) ((a) > (b)? (a) : (b))
+#define CLAMP(min, x, max) ((x) < (min)? (min) : ((x) > (max)? (max) : (x)))
 
 typedef struct {
     const char *p;
@@ -453,23 +454,30 @@ typedef struct {
 
 struct node_diff_ctx {
     const DiffNode *old_node, *new_node;
+    int *old_min_d;
+    int *new_min_d;
     DiffInternalOption *option;
 };
 
 
-static int node_idx_fn(const void* data, int offset, void* context) {
-    return offset;
-}
-
-static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, DiffNodeConnection **conn_ret);
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
 static int node_cmp_fn(int idxA, int idxB, void *context) {
     struct node_diff_ctx *ctx = (struct node_diff_ctx *)context;
     assert (idxA < varray_length(ctx->old_node->children));
     assert (idxB < varray_length(ctx->new_node->children));
+    int *old_min_d = ctx->old_min_d, *new_min_d = ctx->new_min_d;
 
     DiffNode* old = varray_get(ctx->old_node->children, idxA);
     DiffNode* new_ = varray_get(ctx->new_node->children, idxB);
-    if (diff_node(old, new_, ctx->option, NULL)) {
+    int dmax = MAX(old_min_d[idxA], new_min_d[idxB]);
+    int diff_distance;
+    if ((diff_distance = diff_only_txt(old, new_, dmax, ctx->option, NULL, NULL)) != -1) {
+        if (old_min_d[idxA] > diff_distance) { 
+            old_min_d[idxA] = diff_distance;
+        }
+        if (new_min_d[idxB] > diff_distance) {
+            new_min_d[idxB] = diff_distance;
+        }
         return 0;
     } else {
         return 1;
@@ -487,30 +495,81 @@ static bool coherency_test_percentage(const struct diff_edit *ed, int ed_len, do
     return true;
 }
 
+static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, DiffNodeConnection **conn_ret);
 static void add_matched_nodes(DiffNodeConnection *conn, DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, size_t del_off, size_t ins_off, size_t len) {
     size_t idx;
     for (idx = 0; idx < len; idx++) {
         DiffNode *del_child = varray_get(old_node->children, idx + del_off);
         DiffNode *ins_child = varray_get(new_node->children, idx + ins_off);
         DiffNodeConnection *subconn;
-        bool dret = diff_node(del_child, ins_child, option, &subconn);
-        assert (dret == true);
-
-        DiffNodeConnection_add(conn, idx + del_off, idx + ins_off, 1, subconn);
+        if (diff_node(del_child, ins_child, option, &subconn))
+            DiffNodeConnection_add(conn, idx + del_off, idx + ins_off, 1, subconn);
     }
 }
 
+static void fixup_txt_fragmentation(const DiffNode* old_node, const DiffNode* new_node, int* diff_distance, struct diff_edit *ed, int *ed_len) {
+    const int32_t *old_uni_buf = old_node->source_revision->uni_buffer + old_node->source_offset;
+    const int32_t *old_uni_buf_end = old_node->source_revision->uni_buffer + old_node->source_len;
+    const int32_t *new_uni_buf = new_node->source_revision->uni_buffer + new_node->source_offset;
+    const int32_t *new_uni_buf_end = new_node->source_revision->uni_buffer + new_node->source_len;
+        
+    int idx;
+    const int original_ed_len = *ed_len;
+    // 1. when a sequence of either ' ' or '\n' are surrounded by and edit of DIFF_DELETE and DIFF_INSERT
+
+    for (idx = 1; idx < original_ed_len - 1; idx++) {
+        if (ed[idx - 1].op == DIFF_DELETE && ed[idx].op == DIFF_MATCH && ed[idx + 1].op == DIFF_INSERT) {
+            const int32_t *end = old_uni_buf + ed[idx].len;
+            const int32_t *p = old_uni_buf + ed[idx].off;
+            while (p < end) {
+                int32_t c = *p;
+                if (c != ' ' && c != '\n') {
+                    break;
+                }
+                p++;
+            }
+            if (p >= end) {
+                ed[idx - 1].len += ed[idx].len;
+                ed[idx + 1].len += ed[idx].len;
+                *diff_distance += 2 * ed[idx].len;
+                ed[idx].len = -1;
+            }
+        }
+    }
+
+    // if e->len, where e is any elemenent of ed, is -1, it should be deleted.
+    int acc = 0;
+    for (idx = 0; idx < original_ed_len; idx++) {
+        if (ed[idx].len != -1) {
+            if (acc != idx)
+                ed[acc] = ed[idx];
+            acc++;
+        }
+    }
+    *ed_len = acc;
+}
+
 static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOption *option, struct diff_edit **node_ed_ret, int *node_ed_len_ret) {
+    enum diff_node_type node_type = new_node->type;
+
+    int idx;
+    int old_children_len = (int)varray_length(old_node->children);
+    int new_children_len = (int)varray_length(new_node->children);
+
+    int *old_min_d = malloc(old_children_len * sizeof(int));
+    int *new_min_d = malloc(new_children_len * sizeof(int));
+    for (idx = 0; idx < old_children_len; idx++)
+        old_min_d[idx] = ((DiffNode *)varray_get(old_node->children, idx))->source_len;
+    for (idx = 0; idx < new_children_len; idx++)
+        new_min_d[idx] = ((DiffNode *)varray_get(new_node->children, idx))->source_len;
+
     struct node_diff_ctx ctx = {
         .old_node = old_node,
         .new_node = new_node,
+        .old_min_d = old_min_d,
+        .new_min_d = new_min_d,
         .option = option
     };
-
-    enum diff_node_type node_type = new_node->type;
-
-    int old_children_len = (int)varray_length(old_node->children);
-    int new_children_len = (int)varray_length(new_node->children);
 
     int dmax;
     switch (option->public_option.dmax_algorithm) {
@@ -528,11 +587,35 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
     }
 
     int diff_distance = 0;
-    if (dmax > 0) {
-        diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, node_idx_fn, node_cmp_fn, &ctx, dmax, node_ed_ret, node_ed_len_ret);
+    if (dmax >= 0) {
+        diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, idt_idx_fn, node_cmp_fn, &ctx, dmax, node_ed_ret, node_ed_len_ret);
     } else {
         diff_distance = -1;
     }
+    free(old_min_d);
+    free(new_min_d);
+    return diff_distance;
+}
+
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
+    struct txt_diff_ctx ctx = {
+        .old_uni_buf = old_node->source_revision->uni_buffer,
+        .new_uni_buf = new_node->source_revision->uni_buffer,
+        .old_node_offset = old_node->source_offset,
+        .new_node_offset = new_node->source_offset
+    };
+    int diff_distance;
+    if (dmax >= 0) {
+        diff_distance = diff(NULL, 0, old_node->source_len, NULL, 0, new_node->source_len, idt_idx_fn, txt_cmp_fn, &ctx, dmax, ed_ret, ed_len_ret);
+        /*
+        if (ed_ret && ed_len_ret && diff_distance >= 0) {
+            fixup_txt_fragmentation(old_node, new_node, &diff_distance, *ed_ret, ed_len_ret);
+            if (diff_distance > dmax)
+                diff_distance = -1;
+        }
+        */
+    } else
+        diff_distance = -1;
     return diff_distance;
 }
 
@@ -542,103 +625,57 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
 
     struct diff_edit *ed = NULL;
     int ed_len;
-    int diff_distance;
     int idx;
     enum diff_node_type node_type = new_node->type;
 
-    DiffNodeConnection *result = NULL;
-
-
-    size_t old_buf_utf8_len = old_node->source_len;
-    size_t new_buf_utf8_len = new_node->source_len;
-    if (node_type != diff_node_type_article) {
-        struct txt_diff_ctx ctx = {
-            .old_uni_buf = old_node->source_revision->uni_buffer,
-            .new_uni_buf = new_node->source_revision->uni_buffer,
-            .old_node_offset = old_node->source_offset,
-            .new_node_offset = new_node->source_offset
-        };
-
-        int dmax;
-        switch (option->public_option.dmax_algorithm) {
-        case diff_dmax_none:
-            dmax = (old_buf_utf8_len + new_buf_utf8_len) / 2;
-            break;
-        case diff_dmax_counter:
-            dmax = option->public_option.dmax_arg[node_type].i;
-            break;
-        case diff_dmax_percentage:
-            dmax = (int)(option->public_option.dmax_arg[node_type].d * MIN(old_buf_utf8_len, new_buf_utf8_len));
-            break;
-        default:
-            assert (0); // NON REACHABLE
-        }
-        if (dmax > 0) {
-            diff_distance = diff(NULL, 0, old_buf_utf8_len, NULL, 0, new_buf_utf8_len, idt_idx_fn, txt_cmp_fn, &ctx, dmax, &ed, &ed_len);
-        } else
-            diff_distance = -1;
-        if (diff_distance < 0)
+    DiffNodeConnection *result = DiffNodeConnection_new(node_type, 0, old_node, new_node);
+    if (node_type == diff_node_type_sentence) {
+        int diff_distance;
+        int dmax = MAX(old_node->source_len, new_node->source_len);
+        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, option, &ed, &ed_len)) == -1)
             goto error;
-    }
-
-    switch (option->public_option.coherency_algorithm) {
-    case diff_coherency_none:
-        break;
-    case diff_coherency_counter:
-        if (!coherency_test_counter(ed, ed_len, option->public_option.coherency_arg[node_type].i)) goto error;
-        break;
-    case diff_coherency_percentage:
-        if (!coherency_test_percentage(ed, ed_len, option->public_option.coherency_arg[node_type].d)) goto error;
-        break;
-    default:
-        assert(0); // NON REACHABLE
-    }
-
-    if (conn_ret) {
-        result = DiffNodeConnection_new(node_type, diff_distance, old_node, new_node);
-        if (node_type == diff_node_type_sentence) {
-            size_t ins_off = 0;
-            for (idx = 0; idx < ed_len; idx++) {
-                struct diff_edit *e = &ed[idx];
-                switch (e->op) {
-                case DIFF_MATCH:
-                    DiffNodeConnection_add(result, (size_t)e->off, ins_off, (size_t)e->len, NULL);
-                    ins_off += e->len;
-                    break;
-                case DIFF_DELETE:
-                    break;
-                case DIFF_INSERT:
-                    ins_off += e->len;
-                    break;
-                }
+        result->diff_distance = diff_distance;
+        size_t ins_off = 0;
+        for (idx = 0; idx < ed_len; idx++) {
+            struct diff_edit *e = &ed[idx];
+            switch (e->op) {
+            case DIFF_MATCH:
+                DiffNodeConnection_add(result, (size_t)e->off, ins_off, (size_t)e->len, NULL);
+                ins_off += e->len;
+                break;
+            case DIFF_DELETE:
+                break;
+            case DIFF_INSERT:
+                ins_off += e->len;
+                break;
             }
-        } else {
-            struct diff_edit *node_ed;
-            int node_ed_len;
-            int node_diff_distance;
-            if ((node_diff_distance = nodewise_diff(old_node, new_node, option, &node_ed, &node_ed_len)) == -1)
-                goto error;
-
-            result->diff_distance = node_diff_distance;
-            size_t ins_off = 0;
-            for (idx = 0; idx < node_ed_len; idx++) {
-                struct diff_edit *e = &node_ed[idx];
-                switch (e->op) {
-                case DIFF_MATCH:
-                    add_matched_nodes(result, old_node, new_node, option, e->off, ins_off, e->len);
-                    ins_off += e->len;
-                    break;
-                case DIFF_DELETE:
-                    break;
-                case DIFF_INSERT:
-                    ins_off += e->len;
-                    break;
-                }
-            }
-            free(node_ed);
         }
-        *conn_ret = result;
+    } else {
+        struct diff_edit *node_ed;
+        int node_ed_len;
+        int node_diff_distance;
+        if ((node_diff_distance = nodewise_diff(old_node, new_node, option, &node_ed, &node_ed_len)) == -1)
+            goto error;
+        result->diff_distance = node_diff_distance;
+
+        size_t ins_off = 0;
+        for (idx = 0; idx < node_ed_len; idx++) {
+            struct diff_edit *e = &node_ed[idx];
+            switch (e->op) {
+            case DIFF_MATCH:
+                add_matched_nodes(result, old_node, new_node, option, e->off, ins_off, e->len);
+                ins_off += e->len;
+                break;
+            case DIFF_DELETE:
+                break;
+            case DIFF_INSERT:
+                ins_off += e->len;
+                break;
+            }
+        }
+        free(node_ed);
     }
+    *conn_ret = result;
     if (ed)
         free(ed);
     return true;
