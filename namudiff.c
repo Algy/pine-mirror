@@ -191,10 +191,10 @@ static inline void utf8_get_range(const char *utf8, size_t bufsize, size_t index
 }
 
 
-RevisionInfo* RevisionInfo_new(const char *author, const char *revision_str, const char* date, const char* comment) {
+RevisionInfo* RevisionInfo_new(const char *author, int revision_id, const char* date, const char* comment) {
     RevisionInfo* result = malloc(sizeof(RevisionInfo));
     result->author = strdup(author);
-    result->revision_str = strdup(revision_str);
+    result->revision_id = revision_id;
     result->date = strdup(date);
     result->comment = strdup(comment);
     return result;
@@ -202,7 +202,6 @@ RevisionInfo* RevisionInfo_new(const char *author, const char *revision_str, con
 
 void RevisionInfo_free(RevisionInfo *ptr) {
     free(ptr->author);
-    free(ptr->revision_str);
     free(ptr->date);
     free(ptr->comment);
     free(ptr);
@@ -236,7 +235,7 @@ Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size) 
 }
 
 RevisionInfo *RevisionInfo_duplicate(RevisionInfo *info) {
-    return RevisionInfo_new(info->author, info->revision_str, info->date, info->comment);
+    return RevisionInfo_new(info->author, info->revision_id, info->date, info->comment);
 }
 
 void Revision_free(Revision *rev, bool remove_revision_info) {
@@ -509,9 +508,7 @@ static void add_matched_nodes(DiffNodeConnection *conn, DiffNode *old_node, Diff
 
 static void fixup_txt_fragmentation(const DiffNode* old_node, const DiffNode* new_node, int* diff_distance, struct diff_edit *ed, int *ed_len) {
     const int32_t *old_uni_buf = old_node->source_revision->uni_buffer + old_node->source_offset;
-    const int32_t *old_uni_buf_end = old_node->source_revision->uni_buffer + old_node->source_len;
     const int32_t *new_uni_buf = new_node->source_revision->uni_buffer + new_node->source_offset;
-    const int32_t *new_uni_buf_end = new_node->source_revision->uni_buffer + new_node->source_len;
         
     int idx;
     const int original_ed_len = *ed_len;
@@ -698,17 +695,17 @@ error:
  *      revision_info: list of
  *      {
  *          author: string,
- *          revision_str: string,
+ *          revision_id: int,
  *          datetime: string (in format of %Y-%m-%d %H:%M:%S)
  *      }
  *      source: string
- *      source_revision_str: string
- *      previous_revision_str: string
+ *      source_revision_id: int
+ *      previous_revision_id: int
  *
  *      nodes: list of {
  *          type: string in "word", "sentence", "paragraph", "article"
- *          owner_revision_str: string
- *          source_revision_str: string
+ *          owner_revision_id: int
+ *          source_revision_id: int
  *          source_offset: int
  *          source_len: int
  *          children: list of document of the same format of itself
@@ -742,7 +739,7 @@ void namublame_init(NamuBlameContext *ctx, const char *document, Revision *initi
     ctx->document = strdup(document);
     ctx->revision_info_array = varray_init();
     ctx->source_revision = initial_revision;
-    ctx->previous_revision_str = NULL;
+    ctx->previous_revision_id = -1;
     ctx->article = DiffNode_parse(initial_revision);
 
     varray_push(ctx->revision_info_array, RevisionInfo_duplicate(initial_revision->info));
@@ -754,9 +751,6 @@ void namublame_remove(NamuBlameContext* ctx) {
     Revision_free(ctx->source_revision, false);
     varray_free(ctx->revision_info_array, (void (*)(void *))RevisionInfo_free);
     DiffNode_release(ctx->article);
-
-    if (ctx->previous_revision_str)
-        free(ctx->previous_revision_str);
 }
 
 static int bsearch_revision_info(const DiffNode *old_node, size_t off) {
@@ -872,9 +866,7 @@ int namublame_add(NamuBlameContext *ctx, Revision *revision, const DiffOption *o
     } else {
         diff_distance = -1;
 
-        if (ctx->previous_revision_str)
-            free(ctx->previous_revision_str);
-        ctx->previous_revision_str = strdup(ctx->source_revision->info->revision_str);
+        ctx->previous_revision_id = ctx->source_revision->info->revision_id;
     }
 
     Revision_free(ctx->source_revision, false);
@@ -905,12 +897,11 @@ enum namublame_error namublame_deserialize(NamuBlameContext *ctx, const char *bu
 }
 
 
-static RevisionInfo* namublame_get_revision_info(const NamuBlameContext *ctx, const char *revision_str) {
+static RevisionInfo* namublame_get_revision_info(const NamuBlameContext *ctx, int revision_id) {
     int idx, len;
     for (len = varray_length(ctx->revision_info_array), idx = len - 1; idx >= 0; idx--) {
         RevisionInfo *info = varray_get(ctx->revision_info_array, idx);
-        if (!strcmp(info->revision_str, 
-                    revision_str)) {
+        if (info->revision_id == revision_id) {
             return info;
         }
     }
@@ -956,15 +947,15 @@ JSON_Value *DiffNode_jsonify(DiffNode *node, enum namublame_error *error_ret) {
     }
     json_object_set_string(json_object(result), "type", diff_node_type_to_str(node->type));
     if (node->owner == NULL) {
-        *error_ret = namublame_error_invalid_owner_revision_str;
+        *error_ret = namublame_error_invalid_owner_revision_id;
         goto error;
     }
-    json_object_set_string(json_object(result), "owner_revision_str", node->owner->revision_str);
+    json_object_set_number(json_object(result), "owner_revision_id", (double)node->owner->revision_id);
     if (node->source_revision->info == NULL) {
         *error_ret = namublame_error_invalid_source_revision;
         goto error;
     }
-    json_object_set_string(json_object(result), "source_revision_str", node->source_revision->info->revision_str);
+    json_object_set_number(json_object(result), "source_revision_id", (double)node->source_revision->info->revision_id);
     json_object_set_number(json_object(result), "source_offset", (double)node->source_offset);
     json_object_set_number(json_object(result), "source_len", (double)node->source_len);
 
@@ -1006,21 +997,24 @@ DiffNode* DiffNode_parse_json(NamuBlameContext *ctx, JSON_Value *json, enum namu
         goto error;
     }
 
-    const char* owner_revision_str = json_object_get_string(json_object(json), "owner_revision_str");
-    const char* source_revision_str = json_object_get_string(json_object(json), "source_revision_str");
+    JSON_Value* owner_revision_id_val = json_object_get_value(json_object(json), "owner_revision_id");
+    JSON_Value* source_revision_id_val = json_object_get_value(json_object(json), "source_revision_id");
 
-    if (!owner_revision_str) {
-        *error_ret = namublame_error_invalid_owner_revision_str;
+    if (!owner_revision_id_val || json_value_get_type(owner_revision_id_val) != JSONNumber) {
+        *error_ret = namublame_error_invalid_owner_revision_id;
         goto error;
     }
-    if (!source_revision_str) {
+    if (!source_revision_id_val || json_value_get_type(source_revision_id_val) != JSONNumber) {
         *error_ret = namublame_error_invalid_source_revision;
         goto error;
     }
 
-    RevisionInfo *owner = namublame_get_revision_info(ctx, owner_revision_str);
+    int owner_revision_id = (int)json_number(owner_revision_id_val);
+    int source_revision_id = (int)json_number(source_revision_id_val);
+
+    RevisionInfo *owner = namublame_get_revision_info(ctx, owner_revision_id);
     if (!owner) {
-        *error_ret = namublame_error_invalid_owner_revision_str;
+        *error_ret = namublame_error_invalid_owner_revision_id;
         goto error;
     }
 
@@ -1039,8 +1033,8 @@ DiffNode* DiffNode_parse_json(NamuBlameContext *ctx, JSON_Value *json, enum namu
     size_t source_len = (size_t)json_number(source_len_val);
 
     const Revision *source_revision = ctx->source_revision;
-    if (strcmp(source_revision->info->revision_str, source_revision_str) != 0) {
-        *error_ret = namublame_error_revision_str_mismatch;
+    if (source_revision->info->revision_id != source_revision_id) {
+        *error_ret = namublame_error_revision_id_mismatch;
         goto error;
     }
 
@@ -1264,8 +1258,8 @@ int main(int argc, char **argv) {
     fread(oldbuf, 1, oldfile_len, oldfile);
     fread(newbuf, 1, newfile_len, newfile);
 
-    RevisionInfo *old_revinfo = RevisionInfo_new("Olivia", "r1", "2012-11-05 12:02:52", "Initial document.");
-    RevisionInfo *new_revinfo = RevisionInfo_new("Ned", "r2", "2012-12-01 21:30:00", "Added some description.");
+    RevisionInfo *old_revinfo = RevisionInfo_new("Olivia", 1, "2012-11-05 12:02:52", "Initial document.");
+    RevisionInfo *new_revinfo = RevisionInfo_new("Ned", 2, "2012-12-01 21:30:00", "Added some description.");
 
     Revision* old_rev = Revision_new(old_revinfo, oldbuf, oldfile_len);
     Revision* new_rev = Revision_new(new_revinfo, newbuf, newfile_len);
@@ -1300,7 +1294,11 @@ error:
 }
 #elif SIMPLE_NAMUBLAME_PROGRAM
 int main(int argc, char **argv) {
-    // TODO
+    if (argc < 3) {
+        printf("Usage -- [program] spec_file\n");
+        printf("spec_file: %d \n");
+        return 1;
+    }
     return 0;
 }
 #endif

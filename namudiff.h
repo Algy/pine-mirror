@@ -52,19 +52,19 @@ enum namublame_error {
     namublame_error_invalid_json,
     namublame_error_invalid_json_type,
     namublame_error_invalid_node_type,
-    namublame_error_invalid_owner_revision_str,
+    namublame_error_invalid_owner_revision_id,
     namublame_error_invalid_diff_distance,
     namublame_error_invalid_source_revision,
     namublame_error_invalid_source_offset,
     namublame_error_invalid_source_len,
     namublame_error_invalid_index_array,
     namublame_error_invalid_children,
-    namublame_error_revision_str_mismatch
+    namublame_error_revision_id_mismatch
 };
 
 typedef struct {
     char *author;
-    char *revision_str;
+    int revision_id;
     char *date; // %Y-%m-%d %H:%M:%S
     char *comment;
 } RevisionInfo;
@@ -117,11 +117,11 @@ typedef struct {
     char* document;
     varray* revision_info_array;
     Revision *source_revision;
-    char* previous_revision_str; // may be NULL
+    int previous_revision_id; // may be NULL
     DiffNode* article;
 } NamuBlameContext;
 
-RevisionInfo* RevisionInfo_new(const char *author, const char *revision_str, const char* date, const char* comment);
+RevisionInfo* RevisionInfo_new(const char *author, int revision_id, const char* date, const char* comment);
 void RevisionInfo_free(RevisionInfo *ptr);
 
 Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size);
