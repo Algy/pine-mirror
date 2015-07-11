@@ -63,6 +63,7 @@ enum namublame_error {
 };
 
 typedef struct {
+    int refcount;
     char *author;
     int revision_id;
     char *date; // %Y-%m-%d %H:%M:%S
@@ -70,6 +71,7 @@ typedef struct {
 } RevisionInfo;
 
 typedef struct {
+    int refcount;
     RevisionInfo* info;
     int32_t *uni_buffer;
     size_t uni_len;
@@ -81,7 +83,7 @@ typedef struct DiffNode {
     int refcount;
     enum diff_node_type type;
 
-    const RevisionInfo *owner;
+    RevisionInfo *owner;
 
     const Revision *source_revision;
     size_t source_offset;
@@ -122,17 +124,19 @@ typedef struct {
 } NamuBlameContext;
 
 RevisionInfo* RevisionInfo_new(const char *author, int revision_id, const char* date, const char* comment);
-void RevisionInfo_free(RevisionInfo *ptr);
+void RevisionInfo_obtain(RevisionInfo *ptr);
+void RevisionInfo_release(RevisionInfo *ptr);
 
+// it steals buffer
 Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size);
 
-void Revision_free(Revision *rev, bool remove_revision_info);
+void Revision_free(Revision *rev);
 
 DiffNodeConnection *DiffNodeConnection_new(enum diff_node_type node_type, int diff_distance, DiffNode *del_node, DiffNode *ins_node);
 DiffMatch* DiffNodeConnection_add(DiffNodeConnection *conn, size_t del_off, size_t ins_off, size_t len, DiffNodeConnection *subconn);
 void DiffNodeConnection_free(DiffNodeConnection *conn);
 
-DiffNode* DiffNode_new(enum diff_node_type type, const RevisionInfo *owner, const Revision *source_revision, size_t source_offset, size_t source_len);
+DiffNode* DiffNode_new(enum diff_node_type type, RevisionInfo *owner, const Revision *source_revision, size_t source_offset, size_t source_len);
 DiffNode* DiffNode_shallow_clone(const DiffNode* src, bool copy_children);
 void DiffNode_add_child(DiffNode *parent, DiffNode *node);
 DiffNode* DiffNode_parse(const Revision *rev);
