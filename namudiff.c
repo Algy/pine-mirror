@@ -482,7 +482,7 @@ static int node_cmp_fn(int idxA, int idxB, void *context) {
 
     DiffNode* old = varray_get(ctx->old_node->children, idxA);
     DiffNode* new_ = varray_get(ctx->new_node->children, idxB);
-    int dmax = MAX(old_min_d[idxA], new_min_d[idxB]);
+    int dmax = MIN(old_min_d[idxA], new_min_d[idxB]);
     int diff_distance;
     if ((diff_distance = diff_only_txt(old, new_, dmax, true, ctx->option, NULL, NULL)) != -1) {
         if (old_min_d[idxA] > diff_distance) { 
