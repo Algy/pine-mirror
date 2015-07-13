@@ -71,7 +71,6 @@ typedef struct {
 } RevisionInfo;
 
 typedef struct {
-    int refcount;
     RevisionInfo* info;
     int32_t *uni_buffer;
     size_t uni_len;

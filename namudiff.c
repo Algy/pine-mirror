@@ -449,13 +449,16 @@ struct txt_diff_ctx {
     const int32_t *old_uni_buf;
     const int32_t *new_uni_buf;
     size_t old_node_offset, new_node_offset;
+    bool ignore_space;
 };
 
 static int txt_cmp_fn(int idxA, int idxB, void *context) {
     struct txt_diff_ctx *ctx = context;
     int32_t a = ctx->old_uni_buf[ctx->old_node_offset + (size_t)idxA];
     int32_t b = ctx->new_uni_buf[ctx->new_node_offset + (size_t)idxB];
-    return (a > b)? 1 : ((a < b)? -1 : 0);
+    if (ctx->ignore_space && a == ' ')
+        return 1;
+    return (a == b)? 0 : 1;
 }
 
 typedef struct {
@@ -470,7 +473,7 @@ struct node_diff_ctx {
 };
 
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
 static int node_cmp_fn(int idxA, int idxB, void *context) {
     struct node_diff_ctx *ctx = (struct node_diff_ctx *)context;
     assert (idxA < varray_length(ctx->old_node->children));
@@ -481,7 +484,7 @@ static int node_cmp_fn(int idxA, int idxB, void *context) {
     DiffNode* new_ = varray_get(ctx->new_node->children, idxB);
     int dmax = MAX(old_min_d[idxA], new_min_d[idxB]);
     int diff_distance;
-    if ((diff_distance = diff_only_txt(old, new_, dmax, ctx->option, NULL, NULL)) != -1) {
+    if ((diff_distance = diff_only_txt(old, new_, dmax, true, ctx->option, NULL, NULL)) != -1) {
         if (old_min_d[idxA] > diff_distance) { 
             old_min_d[idxA] = diff_distance;
         }
@@ -601,12 +604,13 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
     return diff_distance;
 }
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
     struct txt_diff_ctx ctx = {
         .old_uni_buf = old_node->source_revision->uni_buffer,
         .new_uni_buf = new_node->source_revision->uni_buffer,
         .old_node_offset = old_node->source_offset,
-        .new_node_offset = new_node->source_offset
+        .new_node_offset = new_node->source_offset,
+        .ignore_space = ignore_space
     };
     int diff_distance;
     if (dmax >= 0) {
@@ -636,7 +640,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
     if (node_type == diff_node_type_sentence) {
         int diff_distance;
         int dmax = MAX(old_node->source_len, new_node->source_len);
-        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, option, &ed, &ed_len)) == -1)
+        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, option, &ed, &ed_len)) == -1)
             goto error;
         result->diff_distance = diff_distance;
         size_t ins_off = 0;
@@ -858,16 +862,16 @@ static void propagate_owner_to_ins_node(DiffNodeConnection *conn, RevisionInfo* 
     } else {
         for (idx = 0, len = (int)varray_length(conn->diff_matches); idx < len; idx++) {
             DiffMatch *match = varray_get(conn->diff_matches, idx);
+            DiffNode *ins_node = match->subconn->ins_node, *del_node = match->subconn->del_node;
 
-            RevisionInfo_release(match->subconn->ins_node->owner);
-            match->subconn->ins_node->owner = match->subconn->del_node->owner;
-            RevisionInfo_obtain(match->subconn->del_node->owner);
+            RevisionInfo_release(ins_node->owner);
+            ins_node->owner = del_node->owner;
+            RevisionInfo_obtain(del_node->owner);
 
             propagate_owner_to_ins_node(match->subconn, ins_rev_info);
         }
     }
 }
-
 
 int namublame_add(NamuBlameContext *ctx, Revision *revision, const DiffOption *option) {
     int diff_distance;
@@ -1288,6 +1292,17 @@ int main(int argc, char **argv) {
         printf("Cannot differntiate two revisions\n");
         goto error;
     }
+    enum namublame_error err;
+    JSON_Value *del_json = DiffNode_jsonify(conn->del_node, &err);
+    if (err != namublame_error_ok) {
+        printf("DEL ERROR: %d\n", err);
+        abort();
+    }
+    JSON_Value *ins_json = DiffNode_jsonify(conn->ins_node, &err);
+    if (err != namublame_error_ok) {
+        printf("INS ERROR: %d\n", err);
+        abort();
+    }
     /*
     printf("OLD NODE\n ===\n");
     print_node(conn->del_node, 0);
@@ -1396,9 +1411,16 @@ int main(int argc, char **argv) {
 
     if (!is_first) {
         DiffNode* article = namublame_obtain_article(&context);
-        namublame_remove(&context);
         print_blame_node(article);
+        enum namublame_error err;
+        JSON_Value *val = DiffNode_jsonify(article, &err);
+        char *con = json_serialize_to_string_pretty(val);
+        printf("%s", con);
+        free(con);
+        json_value_free(val);
         DiffNode_release(article);
+
+        namublame_remove(&context);
     }
     return 0;
 }
