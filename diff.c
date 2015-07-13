@@ -50,7 +50,6 @@
 #define SET_REVERSE_V(k, val) _setv(ctx, (k), 1, val)
 
 struct _ctx {
-    diff_idx_fn idx;
     diff_cmp_fn cmp;
     void *context;
     int *buf;
@@ -58,7 +57,6 @@ struct _ctx {
     int ses_capacity;
     int si;
     int dmax;
-    int v_size;
 };
 
 struct middle_snake {
@@ -78,16 +76,12 @@ static inline void _setv(struct _ctx *ctx, int k, int reverse, int val) {
     //           ^: reverse v for negative k
     // [ |k|=0     ] [ |k|=1 ] ...
     j = k <= 0 ? -k * 4 + reverse : k * 4 + (reverse - 2);
-    assert (j >= 0);
-    assert (j < ctx->v_size);
     ctx->buf[j] = val;
 }
 
 static inline int _v(struct _ctx *ctx, int k, int reverse) {
     int j;
     j = k <= 0 ? -k * 4 + reverse : k * 4 + (reverse - 2);
-    assert (j >= 0);
-    assert (j < ctx->v_size);
 
     return ctx->buf[j];
 }
@@ -125,18 +119,9 @@ static int _find_middle_snake(const void *a, int aoff, int n,
 
             ms->x = x;
             ms->y = y;
-            if (ctx->cmp) {
-                while (x < n && y < m && 
-                       ctx->cmp(ctx->idx(a, aoff + x, ctx->context),
-                                ctx->idx(b, boff + y, ctx->context), ctx->context) == 0) {
-                    x++; y++;
-                }
-            } else {
-                const unsigned char *a0 = (const unsigned char *)a + aoff;
-                const unsigned char *b0 = (const unsigned char *)b + boff;
-                while (x < n && y < m && a0[x] == b0[y]) {
-                    x++; y++;
-                }
+            while (x < n && y < m && 
+                   ctx->cmp(a, b, aoff + x, boff + y, ctx->context) == 0) {
+                x++; y++;
             }
             SET_FORWARD_V(k, x);
 
@@ -162,17 +147,10 @@ static int _find_middle_snake(const void *a, int aoff, int n,
 
             ms->u = x;
             ms->v = y;
-            if (ctx->cmp) {
-                while (x > 0 && y > 0 && ctx->cmp(ctx->idx(a, aoff + (x - 1), ctx->context),
-                            ctx->idx(b, boff + (y - 1), ctx->context), ctx->context) == 0) {
-                    x--; y--;
-                } } else {
-                const unsigned char *a0 = (const unsigned char *)a + aoff;
-                const unsigned char *b0 = (const unsigned char *)b + boff;
-                while (x > 0 && y > 0 && a0[x - 1] == b0[y - 1]) {
-                    x--; y--;
-                }
-            }
+            while (x > 0 && y > 0 && 
+                   ctx->cmp(a, b,  aoff + (x - 1), boff + (y - 1), ctx->context) == 0) {
+                x--; y--;
+            } 
             SET_REVERSE_V(kr, x);
 
             if (!odd && kr >= -d && kr <= d) {
@@ -314,30 +292,34 @@ static int _ses(const void *a, int aoff, int n,
     return d;
 }
 
+int diff_get_vbuf_size(int m, int n) {
+    return 8 * (m + n + 1);
+}
+
 int diff(const void *a, int aoff, int n,
          const void *b, int boff, int m,
-         diff_idx_fn idx, diff_cmp_fn cmp, void *context, int dmax,
+         diff_cmp_fn cmp, void *context, int dmax,
+         int *vbuf,
          struct diff_edit **ses_ret, int *ses_n_ret) {
     int d, x, y;
 
     dmax = dmax >= 0? dmax : INT_MAX;
     const int initial_capacity = dmax > 128? dmax: 128;
-    int v_size = 8 * (m + n + 1);
+    bool vbuf_allocated = vbuf == NULL;
+    if (vbuf_allocated) {
+        int v_size = diff_get_vbuf_size(m, n);
+        vbuf = calloc(v_size, sizeof(int));
+    }
+
     struct _ctx ctx = {
-        .idx = idx,
         .cmp = cmp,
         .context = context,
-        .buf = calloc(v_size, sizeof(int)), 
+        .buf = vbuf,
         .ses = calloc(initial_capacity, sizeof(struct diff_edit)),
         .si = 0,
         .ses_capacity = initial_capacity,
         .dmax = dmax,
-        .v_size = v_size
     };
-
-    if (!idx != !cmp) { /* ensure both NULL or both non-NULL */
-        goto failed;
-    }
 
     /* The _ses function assumes the SES will begin or end with a delete
      * or insert. The following will insure this is true by eating any
@@ -347,8 +329,7 @@ int diff(const void *a, int aoff, int n,
     x = y = 0;
     if (cmp) {
         while (x < n && y < m && 
-               cmp(idx(a, aoff + x, context),
-                   idx(b, boff + y, context), context) == 0) {
+               cmp(a, b, aoff + x, boff + y, context) == 0) {
             x++; y++;
         }
     } else {
@@ -363,7 +344,8 @@ int diff(const void *a, int aoff, int n,
     if ((d = _ses(a, aoff + x, n - x, b, boff + y, m - y, &ctx)) == -1) {
         goto failed;
     }
-    free(ctx.buf);
+    if (vbuf_allocated)
+        free(vbuf);
     if (ses_n_ret)
         *ses_n_ret = ctx.si;
     if (ses_ret)
@@ -373,7 +355,8 @@ int diff(const void *a, int aoff, int n,
 
     return d;
 failed:
-    free(ctx.buf);
+    if (vbuf_allocated)
+        free(vbuf);
     free(ctx.ses);
     if (ses_n_ret)
         *ses_n_ret = -1;
@@ -548,11 +531,8 @@ struct utf8_ctx {
     UTF8IndexHint hintA, hintB;
 };
 
-int utf8_idx_fn(const void *data, int offset, void *context) {
-    return offset;
-}
 
-int utf8_cmp_fn(int idxA, int idxB, void* context) {
+int utf8_cmp_fn(const void* dataA, const void* dataB, int idxA, int idxB, void* context) {
     struct utf8_ctx *ctx = context;
     int32_t lhs, rhs;
     lhs = utf8_get(ctx->bufA, ctx->bufsizeA, idxA, &ctx->hintA);
@@ -607,7 +587,9 @@ int main (int argc, char** argv) {
     };
     int ret = diff(NULL, 0, utf8_count(oldbuf, oldfile_len, NULL), 
                    NULL, 0, utf8_count(newbuf, newfile_len, NULL),
-                   utf8_idx_fn, utf8_cmp_fn, &ctx, 100000, &ses, &sn);
+                   utf8_cmp_fn, &ctx, 100000, 
+                   NULL,
+                   &ses, &sn);
 
     for (idx = 0; idx < sn; idx++) {
         struct diff_edit *e = &ses[idx];

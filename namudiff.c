@@ -441,10 +441,6 @@ void DiffNode_release(DiffNode *node) {
     }
 }
 
-static int idt_idx_fn(const void* data, int offset, void* context) {
-    return offset;
-}
-
 struct txt_diff_ctx {
     const int32_t *old_uni_buf;
     const int32_t *new_uni_buf;
@@ -452,7 +448,7 @@ struct txt_diff_ctx {
     bool ignore_space;
 };
 
-static int txt_cmp_fn(int idxA, int idxB, void *context) {
+static int txt_cmp_fn(const void* dataA, const void* dataB, int idxA, int idxB, void *context) {
     struct txt_diff_ctx *ctx = context;
     int32_t a = ctx->old_uni_buf[ctx->old_node_offset + (size_t)idxA];
     int32_t b = ctx->new_uni_buf[ctx->new_node_offset + (size_t)idxB];
@@ -469,12 +465,13 @@ struct node_diff_ctx {
     const DiffNode *old_node, *new_node;
     int *old_min_d;
     int *new_min_d;
+    int *prepared_vbuf;
     DiffInternalOption *option;
 };
 
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
-static int node_cmp_fn(int idxA, int idxB, void *context) {
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
+static int node_cmp_fn(const void *dataA, const void *dataB, int idxA, int idxB, void *context) {
     struct node_diff_ctx *ctx = (struct node_diff_ctx *)context;
     assert (idxA < varray_length(ctx->old_node->children));
     assert (idxB < varray_length(ctx->new_node->children));
@@ -484,7 +481,7 @@ static int node_cmp_fn(int idxA, int idxB, void *context) {
     DiffNode* new_ = varray_get(ctx->new_node->children, idxB);
     int dmax = MAX(old_min_d[idxA], new_min_d[idxB]);
     int diff_distance;
-    if ((diff_distance = diff_only_txt(old, new_, dmax, true, ctx->option, NULL, NULL)) != -1) {
+    if ((diff_distance = diff_only_txt(old, new_, dmax, true, ctx->prepared_vbuf, ctx->option, NULL, NULL)) != -1) {
         if (old_min_d[idxA] > diff_distance) { 
             old_min_d[idxA] = diff_distance;
         }
@@ -567,16 +564,29 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
     int new_children_len = (int)varray_length(new_node->children);
 
     int old_min_d[old_children_len], new_min_d[new_children_len];
-    for (idx = 0; idx < old_children_len; idx++)
-        old_min_d[idx] = ((DiffNode *)varray_get(old_node->children, idx))->source_len;
-    for (idx = 0; idx < new_children_len; idx++)
-        new_min_d[idx] = ((DiffNode *)varray_get(new_node->children, idx))->source_len;
 
+    int max_old_child_source_len = 0, max_new_child_source_len = 0;
+    for (idx = 0; idx < old_children_len; idx++) {
+        int old_child_source_len = ((DiffNode *)varray_get(old_node->children, idx))->source_len;
+        old_min_d[idx] = old_child_source_len;
+        if (max_old_child_source_len < old_child_source_len)
+            max_old_child_source_len = old_child_source_len;
+    }
+
+    for (idx = 0; idx < new_children_len; idx++) {
+        int new_child_source_len = ((DiffNode *)varray_get(new_node->children, idx))->source_len;
+        new_min_d[idx] = new_child_source_len;
+        if (max_new_child_source_len < new_child_source_len)
+            max_new_child_source_len = new_child_source_len;
+    }
+
+    int *prepared_vbuf = malloc(sizeof(int) * diff_get_vbuf_size(max_old_child_source_len, max_new_child_source_len));
     struct node_diff_ctx ctx = {
         .old_node = old_node,
         .new_node = new_node,
         .old_min_d = old_min_d,
         .new_min_d = new_min_d,
+        .prepared_vbuf = prepared_vbuf,
         .option = option
     };
 
@@ -597,14 +607,15 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
 
     int diff_distance = 0;
     if (dmax >= 0) {
-        diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, idt_idx_fn, node_cmp_fn, &ctx, dmax, node_ed_ret, node_ed_len_ret);
+        diff_distance = diff(old_node, 0, old_children_len, new_node, 0, new_children_len, node_cmp_fn, &ctx, dmax, NULL, node_ed_ret, node_ed_len_ret);
     } else {
         diff_distance = -1;
     }
+    free(prepared_vbuf);
     return diff_distance;
 }
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
     struct txt_diff_ctx ctx = {
         .old_uni_buf = old_node->source_revision->uni_buffer,
         .new_uni_buf = new_node->source_revision->uni_buffer,
@@ -614,7 +625,7 @@ static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool 
     };
     int diff_distance;
     if (dmax >= 0) {
-        diff_distance = diff(NULL, 0, old_node->source_len, NULL, 0, new_node->source_len, idt_idx_fn, txt_cmp_fn, &ctx, dmax, ed_ret, ed_len_ret);
+        diff_distance = diff(NULL, 0, old_node->source_len, NULL, 0, new_node->source_len, txt_cmp_fn, &ctx, dmax, vbuf, ed_ret, ed_len_ret);
         /*
         if (ed_ret && ed_len_ret && diff_distance >= 0) {
             fixup_txt_fragmentation(old_node, new_node, &diff_distance, *ed_ret, ed_len_ret);
@@ -640,7 +651,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
     if (node_type == diff_node_type_sentence) {
         int diff_distance;
         int dmax = MAX(old_node->source_len, new_node->source_len);
-        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, option, &ed, &ed_len)) == -1)
+        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, NULL, option, &ed, &ed_len)) == -1)
             goto error;
         result->diff_distance = diff_distance;
         size_t ins_off = 0;

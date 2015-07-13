@@ -6,8 +6,7 @@
 #include "varray.h"
 #include "parson/parson.h"
 
-typedef int (*diff_idx_fn)(const void* data, int offset, void* context);
-typedef int (*diff_cmp_fn)(int idxA, int idxB, void* context);
+typedef int (*diff_cmp_fn)(const void *dataA, const void *dataB, int idxA, int idxB, void* context);
 
 enum diff_operation {
     DIFF_MATCH = 1,
@@ -21,9 +20,11 @@ struct diff_edit {
     int off;
 };
 
+int diff_get_vbuf_size(int m, int n);
 int diff(const void *a, int aoff, int n,
          const void *b, int boff, int m,
-         diff_idx_fn idx, diff_cmp_fn cmp, void *context, int dmax,
+         diff_cmp_fn cmp, void *context, int dmax,
+         int *vbuf,
          struct diff_edit **ses_ret, int *ses_n_ret);
 
 
