@@ -1292,17 +1292,6 @@ int main(int argc, char **argv) {
         printf("Cannot differntiate two revisions\n");
         goto error;
     }
-    enum namublame_error err;
-    JSON_Value *del_json = DiffNode_jsonify(conn->del_node, &err);
-    if (err != namublame_error_ok) {
-        printf("DEL ERROR: %d\n", err);
-        abort();
-    }
-    JSON_Value *ins_json = DiffNode_jsonify(conn->ins_node, &err);
-    if (err != namublame_error_ok) {
-        printf("INS ERROR: %d\n", err);
-        abort();
-    }
     /*
     printf("OLD NODE\n ===\n");
     print_node(conn->del_node, 0);
