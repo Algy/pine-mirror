@@ -234,13 +234,13 @@ void nm_inl_emit_link(struct namuast_inl_container* container, struct namugen_ct
     struct namugen_hook_itfc* hook_itfc = ctx->namugen_hook_itfc;
 
     if (!compatible_mode && !alias && section.len == 0) {
-        if (!strncasecmp(link.str, "br", 2)) {
+        if (!strncasecmp(link.str, "br", link.len)) {
             inl_container_add_return(container, ctx);
             return;
-        } else if (!strncmp(link.str, "\xeb\xaa\xa9\xec\xb0\xa8", link.len) || !strncasecmp(link.str, "tableofcontents", 15)) {
+        } else if (!strncmp(link.str, "\xeb\xaa\xa9\xec\xb0\xa8", link.len) || !strncasecmp(link.str, "tableofcontents", link.len)) {
             emit_toc(container, ctx);
             return;
-        } else if (!strncmp(link.str, "\xea\xb0\x81\xec\xa3\xbc", link.len) || !strncasecmp(link.str, "footnote", 8)) {
+        } else if (!strncmp(link.str, "\xea\xb0\x81\xec\xa3\xbc", link.len) || !strncasecmp(link.str, "footnote", link.len)) {
             emit_fnt_section(container, ctx);
             return;
         } else {
