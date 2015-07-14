@@ -374,7 +374,7 @@ static sds emit_list_rec(struct namuast_list* li, htmlgen_ctx *ctx, sds buf) {
         buf = sdscat(buf, li_ed_tag);
 
         if (p->sublist) {
-            emit_list_rec(p->sublist, ctx, buf);
+            buf = emit_list_rec(p->sublist, ctx, buf);
         }
     }
     buf = sdscat(buf, ul_ed_tag);
