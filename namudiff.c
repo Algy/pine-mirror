@@ -447,17 +447,24 @@ struct txt_diff_ctx {
     const int32_t *old_uni_buf;
     const int32_t *new_uni_buf;
     size_t old_node_offset, new_node_offset;
-    bool ignore_space;
 };
 
 static int txt_cmp_fn(const void* dataA, const void* dataB, int idxA, int idxB, void *context) {
     struct txt_diff_ctx *ctx = context;
     int32_t a = ctx->old_uni_buf[ctx->old_node_offset + (size_t)idxA];
     int32_t b = ctx->new_uni_buf[ctx->new_node_offset + (size_t)idxB];
-    if (ctx->ignore_space && a == ' ')
+    return (a == b)? 0 : 1;
+}
+
+static int txt_cmp_fn_ignore_space(const void* dataA, const void* dataB, int idxA, int idxB, void *context) {
+    struct txt_diff_ctx *ctx = context;
+    int32_t a = ctx->old_uni_buf[ctx->old_node_offset + (size_t)idxA];
+    int32_t b = ctx->new_uni_buf[ctx->new_node_offset + (size_t)idxB];
+    if (a == ' ')
         return 1;
     return (a == b)? 0 : 1;
 }
+
 
 typedef struct {
     DiffOption public_option;
@@ -472,7 +479,7 @@ struct node_diff_ctx {
 };
 
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, bool fixup, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret);
 static int node_cmp_fn(const void *dataA, const void *dataB, int idxA, int idxB, void *context) {
     struct node_diff_ctx *ctx = (struct node_diff_ctx *)context;
     assert (idxA < varray_length(ctx->old_node->children));
@@ -483,7 +490,7 @@ static int node_cmp_fn(const void *dataA, const void *dataB, int idxA, int idxB,
     DiffNode* new_ = varray_get(ctx->new_node->children, idxB);
     int dmax = MAX(old_min_d[idxA], new_min_d[idxB]);
     int diff_distance;
-    if ((diff_distance = diff_only_txt(old, new_, dmax, true, ctx->prepared_vbuf, ctx->option, NULL, NULL)) != -1) {
+    if ((diff_distance = diff_only_txt(old, new_, dmax, true, false, ctx->prepared_vbuf, ctx->option, NULL, NULL)) != -1) {
         if (old_min_d[idxA] > diff_distance) { 
             old_min_d[idxA] = diff_distance;
         }
@@ -617,24 +624,21 @@ static int nodewise_diff(DiffNode *old_node, DiffNode *new_node, DiffInternalOpt
     return diff_distance;
 }
 
-static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
+static int diff_only_txt(DiffNode *old_node, DiffNode *new_node, int dmax, bool ignore_space, bool fixup, int *vbuf, DiffInternalOption *option, struct diff_edit **ed_ret, int *ed_len_ret) {
     struct txt_diff_ctx ctx = {
         .old_uni_buf = old_node->source_revision->uni_buffer,
         .new_uni_buf = new_node->source_revision->uni_buffer,
         .old_node_offset = old_node->source_offset,
-        .new_node_offset = new_node->source_offset,
-        .ignore_space = ignore_space
+        .new_node_offset = new_node->source_offset
     };
     int diff_distance;
     if (dmax >= 0) {
-        diff_distance = diff(NULL, 0, old_node->source_len, NULL, 0, new_node->source_len, txt_cmp_fn, &ctx, dmax, vbuf, ed_ret, ed_len_ret);
-        /*
-        if (ed_ret && ed_len_ret && diff_distance >= 0) {
-            fixup_txt_fragmentation(old_node, new_node, &diff_distance, *ed_ret, ed_len_ret);
-            if (diff_distance > dmax)
-                diff_distance = -1;
+        diff_distance = diff(NULL, 0, old_node->source_len, NULL, 0, new_node->source_len, ignore_space? txt_cmp_fn_ignore_space : txt_cmp_fn, &ctx, dmax, vbuf, ed_ret, ed_len_ret);
+        if (fixup) {
+            if (ed_ret && ed_len_ret && diff_distance >= 0) {
+                fixup_txt_fragmentation(old_node, new_node, &diff_distance, *ed_ret, ed_len_ret);
+            }
         }
-        */
     } else
         diff_distance = -1;
     return diff_distance;
@@ -653,7 +657,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
     if (node_type == diff_node_type_sentence) {
         int diff_distance;
         int dmax = MAX(old_node->source_len, new_node->source_len);
-        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, NULL, option, &ed, &ed_len)) == -1)
+        if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, true, NULL, option, &ed, &ed_len)) == -1)
             goto error;
         result->diff_distance = diff_distance;
         size_t ins_off = 0;
