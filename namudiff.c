@@ -279,6 +279,8 @@ DiffMatch* DiffNodeConnection_add(DiffNodeConnection *conn, size_t del_off, size
     match->ins_off = ins_off;
     match->len = len;
     match->subconn = subconn;
+    if (subconn)
+        conn->full_match = conn->full_match && subconn->full_match;
 
     varray_push(conn->diff_matches, match);
     return match;
