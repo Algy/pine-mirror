@@ -215,11 +215,10 @@ void RevisionInfo_release(RevisionInfo *ptr) {
     }
 }
 
-Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size) {
+Revision* Revision_new(int revision_id, char *buffer, size_t buffer_size) {
     Revision* rev = malloc(sizeof(Revision));
 
-    RevisionInfo_obtain(revinfo);
-    rev->info = revinfo;
+    rev->revision_id = revision_id;
     rev->buffer = buffer;
     if (buffer) {
         size_t idx;
@@ -253,7 +252,6 @@ void Revision_free(Revision *rev) {
         free(rev->uni_buffer);
     if (rev->buffer)
         free(rev->buffer);
-    RevisionInfo_release(rev->info);
     free(rev);
 }
 
@@ -300,13 +298,12 @@ void DiffNodeConnection_free(DiffNodeConnection *conn) {
     free(conn);
 }
 
-DiffNode* DiffNode_new(enum diff_node_type type, RevisionInfo *owner, const Revision *source_revision, size_t source_offset, size_t source_len) {
+DiffNode* DiffNode_new(enum diff_node_type type, int owner_revision_id, const Revision *source_revision, size_t source_offset, size_t source_len) {
     DiffNode *node = malloc(sizeof(DiffNode));
     node->refcount = 1;
     node->type = type;
 
-    RevisionInfo_obtain(owner);
-    node->owner = owner;
+    node->owner_revision_id = owner_revision_id;
 
     node->source_revision = source_revision;
     node->source_offset = source_offset;
@@ -321,7 +318,6 @@ DiffNode* DiffNode_shallow_clone(const DiffNode* src, bool copy_children) {
     DiffNode *node = malloc(sizeof(DiffNode));
     memcpy(node, src, sizeof(DiffNode));
     node->refcount = 1;
-    RevisionInfo_obtain(node->owner);
     if (copy_children) {
         node->children = varray_initc(varray_length(src->children));
         varray_copy(src->children, node->children);
@@ -375,8 +371,8 @@ static void parse_sentence(DiffNode *paragraph, const Revision *rev, bool sep_dp
         }
         const char *send = p;
         if (sstart < send) {
-            DiffNode *sentence = DiffNode_new(diff_node_type_sentence, rev->info, rev, cur_offset + paragraph_offset, str_length);
-            DiffNode *word = DiffNode_new(diff_node_type_word, rev->info, rev, cur_offset + paragraph_offset, str_length);
+            DiffNode *sentence = DiffNode_new(diff_node_type_sentence, rev->revision_id, rev, cur_offset + paragraph_offset, str_length);
+            DiffNode *word = DiffNode_new(diff_node_type_word, rev->revision_id, rev, cur_offset + paragraph_offset, str_length);
             DiffNode_add_child(sentence, word);
             DiffNode_release(word);
 
@@ -387,7 +383,7 @@ static void parse_sentence(DiffNode *paragraph, const Revision *rev, bool sep_dp
 }
 
 DiffNode* DiffNode_parse(const Revision *rev) {
-    DiffNode *article = DiffNode_new(diff_node_type_article, rev->info, rev, 0, 0);
+    DiffNode *article = DiffNode_new(diff_node_type_article, rev->revision_id, rev, 0, 0);
     const char *buffer = rev->buffer;
     size_t buffer_size = rev->buffer_size;
 
@@ -417,7 +413,7 @@ DiffNode* DiffNode_parse(const Revision *rev) {
         }
         const char *pend = p;
         if (pstart < pend) {
-            DiffNode *paragraph = DiffNode_new(diff_node_type_paragraph, rev->info, rev, cur_offset, str_length);
+            DiffNode *paragraph = DiffNode_new(diff_node_type_paragraph, rev->revision_id, rev, cur_offset, str_length);
 
             parse_sentence(paragraph, rev, true, cur_offset, pstart, pend - pstart);
             DiffNode_add_child(article, paragraph);
@@ -438,7 +434,6 @@ void DiffNode_obtain(DiffNode *node) {
 void DiffNode_release(DiffNode *node) {
     if (node && --node->refcount <= 0) {
         varray_free(node->children, (void (*)(void *))DiffNode_release);
-        RevisionInfo_release(node->owner);
         free(node);
     }
 }
@@ -649,13 +644,13 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
     int idx;
     enum diff_node_type node_type = new_node->type;
 
-    DiffNodeConnection *result = DiffNodeConnection_new(node_type, 0, old_node, new_node);
+    DiffNodeConnection *result = NULL; 
     if (node_type == diff_node_type_sentence) {
         int diff_distance;
         int dmax = MAX(old_node->source_len, new_node->source_len);
         if ((diff_distance = diff_only_txt(old_node, new_node, dmax, false, NULL, option, &ed, &ed_len)) == -1)
             goto error;
-        result->diff_distance = diff_distance;
+        result = DiffNodeConnection_new(node_type, diff_distance, old_node, new_node);
         size_t ins_off = 0;
         for (idx = 0; idx < ed_len; idx++) {
             struct diff_edit *e = &ed[idx];
@@ -677,7 +672,7 @@ static bool diff_node(DiffNode *old_node, DiffNode *new_node, DiffInternalOption
         int node_diff_distance;
         if ((node_diff_distance = nodewise_diff(old_node, new_node, option, &node_ed, &node_ed_len)) == -1)
             goto error;
-        result->diff_distance = node_diff_distance;
+        result = DiffNodeConnection_new(node_type, node_diff_distance, old_node, new_node);
 
         size_t ins_off = 0;
         for (idx = 0; idx < node_ed_len; idx++) {
@@ -765,9 +760,6 @@ void namublame_init(NamuBlameContext *ctx, const char *document, Revision *initi
     ctx->source_revision = initial_revision;
     ctx->previous_revision_id = -1;
     ctx->article = DiffNode_parse(initial_revision);
-
-    RevisionInfo_obtain(initial_revision->info);
-    varray_push(ctx->revision_info_array, initial_revision->info);
 }
 
 
@@ -802,7 +794,7 @@ static int bsearch_revision_info(const DiffNode *old_node, size_t off) {
 static void coalesce_or_add(DiffNode* sentence, DiffNode* word) {
     if (!varray_is_empty(sentence->children)) {
         DiffNode *last_word = (DiffNode *)varray_get_last_item(sentence->children);
-        if (last_word->owner->revision_id == word->owner->revision_id && last_word->source_offset + last_word->source_len == word->source_offset) {
+        if (last_word->owner_revision_id == word->owner_revision_id && last_word->source_offset + last_word->source_len == word->source_offset) {
             last_word->source_len += word->source_len;
             return;
         }
@@ -810,10 +802,10 @@ static void coalesce_or_add(DiffNode* sentence, DiffNode* word) {
     DiffNode_add_child(sentence, word);
 }
 
-static void propagate_words_to_ins_node(DiffNodeConnection *conn, RevisionInfo *ins_rev_info) {
+static void propagate_words_to_ins_node(DiffNodeConnection *conn, int ins_revision_id) {
 #define _DIFF_NODE_INSERT_NEW_CHUNK(off) \
     if (fresh_ins_off < (off)) { \
-        DiffNode* chunk = DiffNode_new(diff_node_type_word, ins_rev_info, source_revision, new_node->source_offset + fresh_ins_off, (off) - fresh_ins_off); \
+        DiffNode* chunk = DiffNode_new(diff_node_type_word, ins_revision_id, source_revision, new_node->source_offset + fresh_ins_off, (off) - fresh_ins_off); \
         coalesce_or_add(new_node, chunk); \
         DiffNode_release(chunk); \
     }
@@ -858,7 +850,7 @@ static void propagate_words_to_ins_node(DiffNodeConnection *conn, RevisionInfo *
                 source_end = (old_word->source_offset + old_word->source_len) - old_node->source_offset + new_node->source_offset + match->ins_off - match->del_off;
             }
 
-            DiffNode* chunk = DiffNode_new(diff_node_type_word, old_word->owner, source_revision, source_offset, source_end - source_offset);
+            DiffNode* chunk = DiffNode_new(diff_node_type_word, old_word->owner_revision_id, source_revision, source_offset, source_end - source_offset);
             coalesce_or_add(new_node, chunk);
             DiffNode_release(chunk);
         }
@@ -868,40 +860,34 @@ static void propagate_words_to_ins_node(DiffNodeConnection *conn, RevisionInfo *
     _DIFF_NODE_INSERT_NEW_CHUNK(ins_border);
 }
 
-static void propagate_owner_to_ins_node(DiffNodeConnection *conn, RevisionInfo* ins_rev_info) {
+static void propagate_owner_to_ins_node(DiffNodeConnection *conn, int ins_revision_id) {
     int idx, len;
     if (conn->node_type == diff_node_type_sentence) {
-        propagate_words_to_ins_node(conn, ins_rev_info);
+        propagate_words_to_ins_node(conn, ins_revision_id);
     } else {
         for (idx = 0, len = (int)varray_length(conn->diff_matches); idx < len; idx++) {
             DiffMatch *match = varray_get(conn->diff_matches, idx);
             DiffNode *ins_node = match->subconn->ins_node, *del_node = match->subconn->del_node;
 
-            RevisionInfo_release(ins_node->owner);
-            ins_node->owner = del_node->owner;
-            RevisionInfo_obtain(del_node->owner);
-
-            propagate_owner_to_ins_node(match->subconn, ins_rev_info);
+            ins_node->owner_revision_id = del_node->owner_revision_id;
+            propagate_owner_to_ins_node(match->subconn, ins_revision_id);
         }
     }
 }
 
 int namublame_add(NamuBlameContext *ctx, Revision *revision, const DiffOption *option) {
     int diff_distance;
-    RevisionInfo *revinfo = revision->info;
-    RevisionInfo_obtain(revinfo);
-    varray_push(ctx->revision_info_array, revinfo);
 
     DiffNode *rev_node = DiffNode_parse(revision);
     // Do diff
     DiffNodeConnection* conn = DiffNode_diff(ctx->article, rev_node, option);
     if (conn) {
         diff_distance = conn->diff_distance;
-        propagate_owner_to_ins_node(conn, revinfo);
+        propagate_owner_to_ins_node(conn, revision->revision_id);
         DiffNodeConnection_free(conn);
     } else {
         diff_distance = -1;
-        ctx->previous_revision_id = ctx->source_revision->info->revision_id;
+        ctx->previous_revision_id = ctx->source_revision->revision_id;
     }
     Revision_free(ctx->source_revision);
     ctx->source_revision = revision;
@@ -979,16 +965,8 @@ JSON_Value *DiffNode_jsonify(DiffNode *node, enum namublame_error *error_ret) {
         goto error;
     }
     json_object_set_string(json_object(result), "type", diff_node_type_to_str(node->type));
-    if (node->owner == NULL) {
-        *error_ret = namublame_error_invalid_owner_revision_id;
-        goto error;
-    }
-    json_object_set_number(json_object(result), "owner_revision_id", (double)node->owner->revision_id);
-    if (node->source_revision->info == NULL) {
-        *error_ret = namublame_error_invalid_source_revision;
-        goto error;
-    }
-    json_object_set_number(json_object(result), "source_revision_id", (double)node->source_revision->info->revision_id);
+    json_object_set_number(json_object(result), "owner_revision_id", (double)node->owner_revision_id);
+    json_object_set_number(json_object(result), "source_revision_id", (double)node->source_revision->revision_id);
     json_object_set_number(json_object(result), "source_offset", (double)node->source_offset);
     json_object_set_number(json_object(result), "source_len", (double)node->source_len);
 
@@ -1045,11 +1023,6 @@ DiffNode* DiffNode_parse_json(NamuBlameContext *ctx, JSON_Value *json, enum namu
     int owner_revision_id = (int)json_number(owner_revision_id_val);
     int source_revision_id = (int)json_number(source_revision_id_val);
 
-    RevisionInfo *owner = namublame_get_revision_info(ctx, owner_revision_id);
-    if (!owner) {
-        *error_ret = namublame_error_invalid_owner_revision_id;
-        goto error;
-    }
 
     JSON_Value *source_offset_val =  json_object_get_value(json_object(json), "source_offset");
     JSON_Value *source_len_val = json_object_get_value(json_object(json), "source_len");
@@ -1066,12 +1039,12 @@ DiffNode* DiffNode_parse_json(NamuBlameContext *ctx, JSON_Value *json, enum namu
     size_t source_len = (size_t)json_number(source_len_val);
 
     const Revision *source_revision = ctx->source_revision;
-    if (source_revision->info->revision_id != source_revision_id) {
+    if (source_revision->revision_id != source_revision_id) {
         *error_ret = namublame_error_revision_id_mismatch;
         goto error;
     }
 
-    result = DiffNode_new(node_type, owner, source_revision, source_offset, source_len);
+    result = DiffNode_new(node_type, owner_revision_id, source_revision, source_offset, source_len);
 
     size_t idx, len;
     JSON_Value* children_val = json_object_get_value(json_object(json), "children");
@@ -1100,6 +1073,7 @@ error:
 #ifdef SIMPLE_NAMUDIFF_PROGRAM
 #include <stdio.h>
 #include "sds/sds.h"
+#include "escaper.inc"
 
 static void print_old(DiffNodeConnection *conn, size_t old_idx) {
     bool str_mode = conn->node_type == diff_node_type_sentence;
@@ -1149,7 +1123,174 @@ static void print_new(DiffNodeConnection *conn, size_t new_idx) {
     printf("\x1b[0m");
 }
 
-static void print_conn(DiffNodeConnection *conn, UTF8IndexHint *old_hint, UTF8IndexHint *new_hint) {
+static const char* get_diff_op_string(enum diff_operation diff_op) {
+    switch (diff_op) {
+    case DIFF_INSERT:
+        return "insert";
+    case DIFF_DELETE:
+        return "delete";
+    case DIFF_MATCH:
+        return "match";
+    default:
+        assert (0);
+    }
+    return NULL;
+}
+
+static sds emit_diff_st_tag(enum diff_operation diff_op, enum diff_node_type node_type, int revision_id, sds buf) {
+    switch (node_type) {
+    case diff_node_type_article:
+        buf = sdscatprintf(buf, "<article class='article-diff-%s' data-revision-id='%d'>", get_diff_op_string(diff_op), revision_id);
+        break;
+    case diff_node_type_paragraph:
+        buf = sdscatprintf(buf, "<p class='paragraph-diff-%s' data-revision-id='%d'>", get_diff_op_string(diff_op), revision_id);
+        break;
+    case diff_node_type_sentence:
+        buf = sdscatprintf(buf, "<span class='sentence-diff-%s' data-revision-id='%d'>", get_diff_op_string(diff_op), revision_id);
+        break;
+    case diff_node_type_word:
+        buf = sdscatprintf(buf, "<span class='word-diff-%s' data-revision-id='%d'>", get_diff_op_string(diff_op), revision_id);
+        break;
+    default:
+        assert (0); // NON REACHABLE
+        break;
+    }
+    return buf;
+}
+
+static sds emit_diff_ed_tag(enum diff_node_type node_type, sds buf) {
+    switch (node_type) {
+    case diff_node_type_article:
+        buf = sdscat(buf, "</article>");
+        break;
+    case diff_node_type_paragraph:
+        buf = sdscat(buf, "</p>");
+        break;
+    case diff_node_type_sentence:
+    case diff_node_type_word:
+        buf = sdscat(buf, "</span>");
+        break;
+    default:
+        assert (0); // NON REACHABLE
+        break;
+    }
+    return buf;
+}
+
+static sds emit_buffer(enum diff_node_type node_type, const int32_t *uni_buffer, size_t length, sds buf) {
+    const int32_t *p;
+    const int32_t *border = uni_buffer + length;
+    for (p = uni_buffer; p < border;) {
+        int32_t c = *p;
+        if (c == '\n') {
+            if (node_type != diff_node_type_paragraph || p != border - 1) {
+                buf = sdscat(buf, "<br> ");
+            }
+            p++;
+        } else if (c == ' ') {
+            buf = sdscat(buf, " ");
+            p++;
+            while (p < border && *p == ' ') {
+                buf = sdscat(buf, "&nbsp;");
+                p++;
+            }
+        } else {
+            if (c == -1)
+                c = '?';
+            char str[5] = {0, };
+            utf8_set(str, c);
+            buf = sdscat_escape_html_content(buf, str);
+            p++;
+        }
+    }
+    return buf;
+}
+
+static sds emit_diff_node(DiffNode *parent, int owner_revision_id, size_t sub_idx, size_t sub_len, enum diff_operation diff_op, sds buf) {
+    const int32_t *uni_buffer = parent->source_revision->uni_buffer;
+    const int32_t *st;
+    size_t uni_buffer_len;
+    enum diff_node_type node_type;
+    if (parent->type == diff_node_type_sentence) {
+        st = uni_buffer + parent->source_offset + sub_idx;
+        uni_buffer_len = sub_len;
+        node_type = diff_node_type_word;
+    } else {
+        size_t cnt;
+        
+        DiffNode *oc = varray_get(parent->children, sub_idx);
+        st = uni_buffer + oc->source_offset;
+        uni_buffer_len = 0;
+        for (cnt = 0; cnt < sub_len; cnt++) {
+            DiffNode *iter = varray_get(parent->children, sub_idx + cnt);
+            uni_buffer_len += iter->source_len;
+        }
+        node_type = oc->type;
+    }
+    buf = emit_diff_st_tag(diff_op, node_type, owner_revision_id, buf);
+    buf = emit_buffer(node_type, st, uni_buffer_len, buf);
+    buf = emit_diff_ed_tag(node_type, buf);
+    return buf;
+}
+
+static inline sds emit_old(DiffNodeConnection *conn, size_t old_idx, size_t old_len, sds buf) {
+    return emit_diff_node(conn->del_node, conn->del_node->owner_revision_id, old_idx, old_len, DIFF_DELETE, buf);
+}
+
+static inline sds emit_new(DiffNodeConnection *conn, size_t new_idx, size_t new_len, sds buf) {
+    return emit_diff_node(conn->ins_node, conn->ins_node->owner_revision_id, new_idx, new_len, DIFF_INSERT, buf);
+}
+
+static sds emit_html_conn(DiffNodeConnection *conn, sds buf) {
+    size_t old_idx = 0;
+    size_t new_idx = 0;
+    int match_idx;
+    int match_len = varray_length(conn->diff_matches);
+
+    bool str_mode = conn->node_type == diff_node_type_sentence;
+
+    buf = emit_diff_st_tag(DIFF_MATCH, conn->node_type, conn->del_node->owner_revision_id, buf);
+    if (!conn->full_match) {
+        for (match_idx = 0; match_idx < match_len; match_idx++) {
+            DiffMatch *match = varray_get(conn->diff_matches, match_idx);
+            if (old_idx < match->del_off) {
+                buf = emit_old(conn, old_idx, match->del_off - old_idx, buf);
+                old_idx = match->del_off;
+            } 
+            if (new_idx < match->ins_off) {
+                buf = emit_new(conn, new_idx, match->ins_off - new_idx, buf);
+                new_idx = match->ins_off;
+            }
+            if (str_mode) {
+                const int32_t *uni_buffer = conn->del_node->source_revision->uni_buffer + conn->del_node->source_offset + match->del_off;
+                buf = emit_buffer(diff_node_type_word, uni_buffer, match->len, buf);
+            } else {
+                buf = emit_html_conn(match->subconn, buf);
+            }
+            old_idx += match->len;
+            new_idx += match->len;
+        }
+        if (str_mode) {
+            if (old_idx < conn->del_node->source_len) {
+                buf = emit_old(conn, old_idx, conn->del_node->source_len - old_idx, buf);
+            } else if (new_idx < conn->ins_node->source_len) {
+                buf = emit_new(conn, new_idx, conn->ins_node->source_len - new_idx, buf);
+            }
+        } else {
+            if (old_idx < varray_length(conn->del_node->children)) {
+                buf = emit_old(conn, old_idx, varray_length(conn->del_node->children) - old_idx, buf);
+            } else if (new_idx < varray_length(conn->ins_node->children)) {
+                buf = emit_new(conn, new_idx, varray_length(conn->ins_node->children) - new_idx, buf);
+            } 
+        }
+    } else {
+        buf = emit_buffer(conn->node_type, conn->del_node->source_revision->uni_buffer + conn->del_node->source_offset, conn->del_node->source_len, buf);
+    }
+    buf = emit_diff_ed_tag(conn->node_type, buf);
+    return buf;
+}
+
+static void print_conn(DiffNodeConnection *conn) {
     size_t old_idx = 0;
     size_t new_idx = 0;
     int match_idx = 0;
@@ -1195,7 +1336,7 @@ static void print_conn(DiffNodeConnection *conn, UTF8IndexHint *old_hint, UTF8In
                         printf("%s", str);
                     }
                 } else {
-                    print_conn(match->subconn, old_hint, new_hint);
+                    print_conn(match->subconn);
                 }
                 old_idx += match->len;
                 new_idx += match->len;
@@ -1216,7 +1357,7 @@ static void print_node(DiffNode *node, int indent) {
     PRINT_INDENT;
     printf("type: %s\n", diff_node_type_to_str(node->type));
     PRINT_INDENT;
-    printf("revision: r%d\n", node->owner->revision_id);
+    printf("revision: r%d\n", node->owner_revision_id);
     PRINT_INDENT;
     printf("source_offset: %zu\n", node->source_offset);
     PRINT_INDENT;
@@ -1291,13 +1432,8 @@ int main(int argc, char **argv) {
     fread(oldbuf, 1, oldfile_len, oldfile);
     fread(newbuf, 1, newfile_len, newfile);
 
-    RevisionInfo *old_revinfo = RevisionInfo_new("Olivia", 1, "2012-11-05 12:02:52", "Initial document.");
-    RevisionInfo *new_revinfo = RevisionInfo_new("Ned", 2, "2012-12-01 21:30:00", "Added some description.");
-
-    Revision* old_rev = Revision_new(old_revinfo, oldbuf, oldfile_len);
-    Revision* new_rev = Revision_new(new_revinfo, newbuf, newfile_len);
-    RevisionInfo_release(old_revinfo);
-    RevisionInfo_release(new_revinfo);
+    Revision* old_rev = Revision_new(1, oldbuf, oldfile_len);
+    Revision* new_rev = Revision_new(2, newbuf, newfile_len);
 
     DiffOption opt = {.dmax_algorithm = diff_dmax_none, .coherency_algorithm = diff_coherency_none};
     DiffNodeConnection *conn = Revision_diff(old_rev, new_rev, &opt);
@@ -1314,8 +1450,10 @@ int main(int argc, char **argv) {
     print_conn_ast(conn, 0);
     */
 
-    UTF8IndexHint old_hint = {conn->del_node->source_revision->buffer, 0}, new_hint = {conn->ins_node->source_revision->buffer, 0};
-    print_conn(conn, &old_hint, &new_hint);
+    print_conn(conn);
+    sds code = emit_html_conn(conn, sdsempty());
+    printf("\n%s\n", code);
+    sdsfree(code);
 
     DiffNodeConnection_free(conn);
 
@@ -1331,8 +1469,7 @@ error:
 
 static void print_blame_node(DiffNode *node) {
     const char *tag = diff_node_type_to_str(node->type);
-    const RevisionInfo *revinfo = node->owner;
-    printf("<%s rev='%d' author='%s' date='%s' comment='%s'>\n", tag, revinfo->revision_id, revinfo->author, revinfo->date, revinfo->comment);
+    printf("<%s revision_id='%d'>\n", tag, node->owner_revision_id);
     if (node->type == diff_node_type_word) {
         const Revision *rev = node->source_revision;
         size_t idx;
@@ -1396,7 +1533,7 @@ int main(int argc, char **argv) {
         fseek(revfile, 0, SEEK_SET);
         char* buffer = calloc(revfile_size + 1, 1);
         fread(buffer, 1, revfile_size, revfile);
-        Revision *rev = Revision_new(rev_info, buffer, revfile_size);
+        Revision *rev = Revision_new(revision_id, buffer, revfile_size);
         RevisionInfo_release(rev_info);
         // NOTE: Revision_new steals buffer. So there's no need to free buffer
 
