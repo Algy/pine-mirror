@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-# -*= coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 import gzip
 import time
 
+from docdata import HistoryRecord, DocumentOperation, RecentChange
 from datetime import datetime
 from StringIO import StringIO
-from urllib2 import Request, urlopen, quote
+from urllib2 import Request, urlopen, quote, HTTPError
 from pprint import pprint
 
 
@@ -28,12 +29,26 @@ except ImportError:
         raise ImportError("cannot import module named neither HTMLParser nor html, which is required to unescape HTML entity")
 
 
+def _spoofing_content_decoder(headers, raw):
+    if headers.get("Content-Encoding", None) == "gzip":
+        compressed_stream = StringIO(raw)
+        return gzip.GzipFile(fileobj=compressed_stream).read()
+    else:
+        return raw
 
+
+class SpoofingUrlopenException(Exception):
+    def __init__(self, http_exc):
+        Exception.__init__(self, http_exc.args)
+        self.code = http_exc.code
+        self.msg = http_exc.msg
+        self.headers = http_exc.headers
+        self.content = _spoofing_content_decoder(http_exc.headers, http_exc.fp.read())
+        self.args = ("%d %s"%(self.code, self.msg), )
 
 
 class FormatMayHaveChangedException(Exception):
     pass
-
 
 def spoofing_urlopen(url):
     headers = {
@@ -44,12 +59,12 @@ def spoofing_urlopen(url):
         "Accept-Encoding": "gzip"
     }
     req = Request(url, headers=headers)
-    resp = urlopen(req)
-    if resp.headers.get("Content-Encoding", None) == "gzip":
-        compressed_stream = StringIO(resp.read())
-        return gzip.GzipFile(fileobj=compressed_stream).read()
-    else:
-        return resp.read()
+    try:
+        resp = urlopen(req)
+        return _spoofing_content_decoder(resp.headers, resp.read())
+    except HTTPError as exc:
+        raise SpoofingUrlopenException(exc)
+
 
 def split_li(s, st_tag="<li>", ed_tag="</li>"):
     try:
@@ -59,69 +74,13 @@ def split_li(s, st_tag="<li>", ed_tag="</li>"):
     except IndexError as err:
         raise FormatMayHaveChangedException(err)
 
-class DocumentOperation(object):
-    NEW = 'new'
-    MODIFY = 'modify'
-    DELETE = 'delete'
-    REVERT = 'revert'
-    MOVE = 'move'
-    OPERATIONS = [NEW, 
-                  MODIFY, 
-                  DELETE, 
-                  REVERT, 
-                  MOVE]
-
-    def __init__(self, op, revision_id=None, original_document=None, current_document=None):
-        if op not in self.OPERATIONS:
-            raise ValueError("%s is not proper operation."%op)
-        self.op = op
-        self.revision_id = revision_id
-        self.original_document = original_document
-        self.current_document = current_document
-    
-    def rc_equal(self, another):
-        return (self.op == another.op and
-                self.revision_id == another.revision_id and
-                self.original_document == another.original_document and
-                self.current_document == another.current_document)
-
-    def __repr__(self):
-        if self.op == self.REVERT:
-            return "[%s to r%d]"%(self.op, self.revision_id)
-        elif self.op == self.MOVE:
-            return "[%s from '%s' to '%s']"%(self.op, self.original_document, self.current_document)
-        else:
-            return "[%s]"%self.op
-
-
-    @classmethod
-    def new(cls):
-        return cls(cls.NEW)
-
-    @classmethod
-    def modify(cls):
-        return cls(cls.MODIFY)
-
-    @classmethod
-    def delete(cls):
-        return cls(cls.DELETE)
-
-    @classmethod
-    def revert(cls, revision_id):
-        assert (isinstance(revision_id, (int, long,)))
-        return cls(cls.REVERT, revision_id=revision_id)
-
-    @classmethod
-    def move(cls, original_document, current_document):
-        return cls(cls.MOVE, original_document=original_document, current_document=current_document)
-
 
 def _interpret_i(i, ro_exists=True):
     if isinstance(i, unicode):
         i = i.encode("UTF-8")
     i = i.strip()
     if i == '(\xec\x83\x88 \xeb\xac\xb8\xec\x84\x9c)': # sae moonseo
-        return DocumentOperation.new()
+        return DocumentOperation.create()
     elif i == '(\xec\x82\xad\xec\xa0\x9c)': # sakje
         return DocumentOperation.delete()
     elif i.startswith('(r') and i.endswith('\xec\x9c\xbc\xeb\xa1\x9c \xeb\x90\x98\xeb\x8f\x8c\xeb\xa6\xbc)'): # ro dwidolim
@@ -146,48 +105,6 @@ def _interpret_i(i, ro_exists=True):
             return DocumentOperation.move(s, None)
     else:
         raise FormatMayHaveChangedException(i)
-
-
-class HistoryRecord(object):
-    def __init__(self, document, date, operation, revision_id, ip=None, author_name=None, comment=""):
-        assert (isinstance(revision_id, (int, long,)))
-        self.document = document
-        self.date = date
-        self.revision_id = revision_id
-        self.operation = operation
-        self.ip = ip
-        self.author_name = author_name
-        self.comment = comment
-
-    def __repr__(self):
-        return "%s%s(%s) r%d %s: \"%s\"" % (self.operation, self.document, datetime.strftime(self.date, "%Y-%m-%d %H:%M:%S"), self.revision_id, self.ip or self.author_name, self.comment)
-
-
-class RecentChange(object):
-    def __init__(self, document, date, operation, revision_id, ip=None, author_name=None, comment=""):
-        assert (isinstance(revision_id, (int, long,)))
-        self.document = document
-        self.date = date
-        self.operation = operation
-        self.revision_id = revision_id
-        self.ip = ip
-        self.author_name = author_name
-        self.comment = comment
-
-    def rc_equal(self, another):
-        return (self.document == another.document and
-                self.date == another.date and
-                self.operation.rc_equal(another.operation) and
-                self.revision_id == another.revision_id and 
-                self.ip == another.ip and
-                self.author_name == another.author_name and
-                self.comment == another.comment)
-
-    def __repr__(self):
-        return "%s%s(%s) r%d %s: \"%s\"" % (repr(self.operation), self.document, datetime.strftime(self.date, "%Y-%m-%d %H:%M:%S"), self.revision_id, self.ip or self.author_name, self.comment)
-
-
-
 
 
 
@@ -282,9 +199,11 @@ def retrieve_history(document, max_revision_id=None):
     return result
 
 
-def retrieve_recent_changes():
-    src = spoofing_urlopen("https://namu.wiki/RecentChanges")
-
+def retrieve_recent_changes(logtype=None):
+    url = "https://namu.wiki/RecentChanges"
+    if logtype is not None:
+        url += "?logtype=%s"%logtype
+    src = spoofing_urlopen(url)
     main_sep = Seperator(src)
 
     tbody = main_sep.pop("<tbody>", "</tbody>")
@@ -309,7 +228,7 @@ def retrieve_recent_changes():
         _, _, document = tr_sep.pop("<a href=", "w/", ">", "</a>")
         document = unescape_html_entity(document).strip()
         
-        if operation.op != DocumentOperation.NEW:
+        if operation.op != DocumentOperation.CREATE:
             _, _, rev_id_str, _ = tr_sep.pop("<a href=", "diff/", "?rev=", "&", "</a>")
             try:
                 revision_id = int(rev_id_str)
@@ -356,34 +275,6 @@ def retrieve_raw_document(document, revision_id=None):
     url += "/".join([quote(chunk) for chunk in document.split('/')])
     url += tag
     return spoofing_urlopen(url)
-
-
-def recent_change_difference(old_rc_list, new_rc_list):
-    for new_offset in range(len(new_rc_list)):
-        old_idx = 0
-        old_len = len(old_rc_list)
-        new_len = len(new_rc_list)
-        success = True
-        while old_idx < old_len and old_idx + new_offset < new_len:
-            new_idx = old_idx + new_offset 
-            if not old_rc_list[old_idx].rc_equal(new_rc_list[new_idx]):
-                success = False
-                break
-            old_idx += 1
-        if success:
-            return new_rc_list[:new_offset]
-    return new_rc_list[:]
-
-
-def rc_loop():
-    old_rc_list = retrieve_recent_changes()
-    while True:
-        time.sleep(3);
-        rc_list = retrieve_recent_changes()
-
-        pprint(recent_change_difference(old_rc_list, rc_list))
-        old_rc_list = rc_list
-
 
 def commentize(cmt):
     cmt = cmt.strip()
