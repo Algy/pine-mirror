@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     clock_t clock_ed = clock();
     double us = (((double) (clock_ed - clock_st)) / CLOCKS_PER_SEC) * 1000. * 1000.;
 
-    printf("<!doctype html><meta charset='utf-8'><link ref='stylesheet' href='https://namu.wiki/css/wiki.css?1430916909'> <div class='wiki-main'><article>%s</article></div>\n", result);
+    printf("<div class='wiki-main'><article>%s</article></div>\n", result);
     sdsfree(result);
     printf("generated in %.2lf us\n", us);
     free(buffer);

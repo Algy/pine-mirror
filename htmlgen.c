@@ -411,10 +411,10 @@ static sds link_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     assert (link->name != NULL);
     bool doesnt_exist = doc_doesnt_exist(ctx, link->name);
     sds href = ctx->doc_itfc->doc_href(ctx->doc_itfc, link->name);
-    buf = sdscat(buf, "<a");
+    buf = sdscat(buf, "<a class='internal-link ");
     if (doesnt_exist)
-        buf = sdscat(buf, " class='not-exist'");
-    buf = sdscat(buf, " href='");
+        buf = sdscat(buf, " not-exist");
+    buf = sdscat(buf, "' href='");
     buf = sdscatsds(buf, href);
     if (link->section) {
         buf = sdscat(buf, "#s-");
@@ -437,7 +437,7 @@ static sds extlink_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
 
     buf = sdscatprintf(buf, "<a href='");
     buf = sdscat_escape_html_attr(buf, extlink->href);
-    buf = sdscatprintf(buf, "'>");
+    buf = sdscatprintf(buf, "' class='external-link'>");
     
     if (extlink->alias) {
         buf = INL_HTML_OP(extlink->alias, to_html, ctx, buf);
@@ -498,7 +498,7 @@ static sds block_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
 
 static sds fnt_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     struct namuast_inl_fnt *fnt = (struct namuast_inl_fnt *)inl;
-    buf = sdscatprintf(buf, "<a class='wiki-fn-content' id='rfn-%d' href='#fn-%d' title='", fnt->id, fnt->id);
+    buf = sdscatprintf(buf, "<a class='wiki-fn-link' id='rfn-%d' href='#fn-%d' title='", fnt->id, fnt->id);
     buf = sdscat_escape_html_attr(buf, fnt->raw);
     buf = sdscat(buf, "'>");
     if (fnt->is_named) {
@@ -543,7 +543,7 @@ static sds fnt_section_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds bu
     }
 
     if (e != list_end(fnt_list)) {
-        buf = sdscat(buf, "<ol wiki-macro-footnote>");
+        buf = sdscat(buf, "<ol class='wiki-macro-footnote'>");
         for (; e != list_end(fnt_list); e = list_next(e)) {
             struct namuast_inl_fnt *fnt = list_entry(e, struct namuast_inl_fnt, elem);
             if (fnt->id > fnt_section->cur_footnote_id) {
@@ -562,7 +562,7 @@ static sds dfs_toc(struct htmlgen_ctx *ctx, sds buf, struct namuast_heading* hd)
     if (hd->parent) { 
         // when it is not the root: sentinel node
         buf = sdscat(buf, "<span class='toc-item'>");
-        buf = sdscatprintf(buf, "<a href='#s-%s'>%s</a>.", hd->section_name, hd->section_name);
+        buf = sdscatprintf(buf, "<a class='tocs-section-link' href='#s-%s'>%s</a>.", hd->section_name, hd->section_name);
         buf = INL_HTML_OP(hd->content, to_html, ctx, buf);
         buf = sdscat(buf, "</span>");
     }

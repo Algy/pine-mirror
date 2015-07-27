@@ -894,14 +894,20 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
     case '>':
         // quotation
         {
+            struct namuast_inl_container *container = make_inl_container();
             char *testp = p;
-            testp++;
-            UNTIL_NOT_REACHING1(testp, border, '>') {
-                testp++;
+            while (testp < border && *testp == '>') {
+                UNTIL_NOT_REACHING1(testp, border, '>') {
+                    testp++;
+                }
+                CONSUME_SPACETAB(testp, border);
+                scn_parse_inline(container, testp, border, &testp, ctx);
+                if (EQ(testp, border, '\n')) {
+                    inl_container_add_return(container, ctx);
+                    testp++;
+                }
             }
-            CONSUME_SPACETAB(testp, border);
-            nm_emit_quotation(ctx, scn_parse_inline(make_inl_container(), testp, border, &testp, ctx));
-            CONSUME_IF_ENDL(testp, border);
+            nm_emit_quotation(ctx, container);
             return testp;
         }
         break;
