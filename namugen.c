@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include "namugen.h"
 #include "escaper.inc"
@@ -229,36 +230,53 @@ static void emit_toc(namuast_inl_container *container, struct namugen_ctx *ctx) 
     inl_container_add_steal(container, &ctx->shared_toc->_base);
 }
 
+static int cmp_kw(const void *lhs, const void *rhs) {
+    return sdscmp(*(const sds *)lhs, *(const sds *)rhs);
+}
 
-void nm_inl_emit_link(struct namuast_inl_container* container, struct namugen_ctx *ctx, bndstr link, bool compatible_mode, struct namuast_inl_container *alias, bndstr section) {
-    struct namugen_hook_itfc* hook_itfc = ctx->namugen_hook_itfc;
-
-    if (!compatible_mode && !alias && section.len == 0) {
-        if (!strncasecmp(link.str, "br", link.len)) {
+void nm_inl_emit_macro(struct namuast_inl_container* container, struct namugen_ctx *ctx, bndstr name, bool is_fn, size_t pos_args_len, bndstr* pos_args, size_t kw_args_len, bndstr* kw_args, bndstr raw) {
+    size_t idx;
+    if (!is_fn) {
+        if (!strncasecmp(name.str, "br", name.len)) {
             inl_container_add_return(container, ctx);
             return;
-        } else if (!strncmp(link.str, "\xeb\xaa\xa9\xec\xb0\xa8", link.len) || !strncasecmp(link.str, "tableofcontents", link.len)) {
+        } else if (!strncmp(name.str, "\xeb\xaa\xa9\xec\xb0\xa8", name.len) || !strncasecmp(name.str, "tableofcontents", name.len)) {
             emit_toc(container, ctx);
             return;
-        } else if (!strncmp(link.str, "\xea\xb0\x81\xec\xa3\xbc", link.len) || !strncasecmp(link.str, "footnote", link.len)) {
+        } else if (!strncmp(name.str, "\xea\xb0\x81\xec\xa3\xbc", name.len) || !strncasecmp(name.str, "footnote", name.len)) {
             emit_fnt_section(container, ctx);
             return;
-        } else {
-            char* left_par = strnstr(link.str, "(", link.len);
-            char* border = link.str + link.len;
-            if (left_par) {
-                char *right_par = strnstr(left_par + 1, ")", border - (left_par + 1));
-                if (right_par && right_par + 1 < border) {
-                    bndstr fn = {link.str, left_par - link.str};
-                    bndstr arg = {left_par + 1, right_par - left_par - 1};
-                    if (hook_itfc->hook_fn_call(hook_itfc, ctx, container, fn, arg))
-                        return;
-                }
-            }
-            if (hook_itfc->hook_fn_link(hook_itfc, ctx, container, link))
-                return;
         }
     }
+    struct namuast_inl_macro *macro = (struct namuast_inl_macro *)NEW_INL_NAMUAST(namuast_inltype_macro);
+    macro->name = sdsnewlen(name.str, name.len);
+    if (is_fn) {
+        macro->is_fn = true;
+        macro->pos_args_len = pos_args_len;
+        macro->pos_args = calloc(pos_args_len, sizeof(sds));
+        for (idx = 0; idx < pos_args_len; idx++) {
+            macro->pos_args[idx] = sdsnewlen(pos_args[idx].str, pos_args[idx].len);
+        }
+        macro->kw_args_len = kw_args_len;
+        macro->kw_args = calloc(kw_args_len * 2, sizeof(sds));
+        for (idx = 0; idx < kw_args_len * 2; idx++) {
+            macro->kw_args[idx] = sdsnewlen(kw_args[idx].str, kw_args[idx].len);
+        }
+        qsort(macro->kw_args, kw_args_len, sizeof(sds) * 2, cmp_kw);
+    } else {
+        macro->is_fn = false;
+        macro->pos_args_len = 0;
+        macro->kw_args_len = 0;
+        macro->pos_args = NULL;
+        macro->kw_args = NULL;
+    }
+    macro->raw = sdsnewlen(raw.str, raw.len);
+    inl_container_add_steal(container, &macro->_base);
+}
+
+
+void nm_inl_emit_link(struct namuast_inl_container* container, struct namugen_ctx *ctx, bndstr link, struct namuast_inl_container *alias, bndstr section) {
+
     struct namuast_inl_link *linknode = (struct namuast_inl_link *)NEW_INL_NAMUAST(namuast_inltype_link);
     linknode->name = sdsnewlen(link.str, link.len);
     linknode->alias = alias;
@@ -401,7 +419,7 @@ struct nm_block_emitters block_emitter_ops_paragraphic = {
 };
 
 
-void namugen_init(namugen_ctx* ctx, const char* cur_doc_name, struct namugen_hook_itfc* namugen_hook_itfc) {
+void namugen_init(namugen_ctx* ctx, const char* cur_doc_name) {
     ctx->is_in_footnote = false;
     ctx->last_footnote_id = 0;
     ctx->last_anon_fnt_num = 0;
@@ -414,7 +432,6 @@ void namugen_init(namugen_ctx* ctx, const char* cur_doc_name, struct namugen_hoo
     list_init(&container->fnt_list);
     ctx->result_container = container;
 
-    ctx->namugen_hook_itfc = namugen_hook_itfc;
     ctx->cur_doc_name = sdsnew(cur_doc_name);
 
     ctx->shared_hr = (struct namuast_hr *)NEW_NAMUAST(namuast_type_hr);
@@ -557,6 +574,7 @@ static void inl_dtor_extlink(namuast_inline *inl) {
         RELEASE_NAMUAST(extlink->alias);
     }
 }
+
 static void inl_dtor_image(namuast_inline* inl) {
     struct namuast_inl_image *image = (struct namuast_inl_image *)inl;
     sdsfree(image->src);
@@ -566,6 +584,23 @@ static void inl_dtor_image(namuast_inline* inl) {
     if (image->height) {
         sdsfree(image->height);
     }
+}
+
+static void inl_dtor_macro(namuast_inline* inl) {
+    struct namuast_inl_macro *macro = (struct namuast_inl_macro *)inl;
+    sdsfree(macro->name);
+    size_t idx;
+    for (idx = 0; idx < macro->pos_args_len; idx++) {
+        sdsfree(macro->pos_args[idx]);
+    }
+    if (macro->pos_args)
+        free(macro->pos_args);
+    for (idx = 0; idx < macro->kw_args_len * 2; idx++) {
+        sdsfree(macro->kw_args[idx]);
+    }
+    if (macro->kw_args)
+        free(macro->kw_args);
+    sdsfree(macro->raw);
 }
 
 
@@ -634,6 +669,7 @@ void initmod_namugen() {
     SET_INL_SIZETBL(namuast_inltype_span, struct namuast_inl_span);
     SET_INL_SIZETBL(namuast_inltype_return, struct namuast_inl_return);
     SET_INL_SIZETBL(namuast_inltype_image, struct namuast_inl_image);
+    SET_INL_SIZETBL(namuast_inltype_macro, struct namuast_inl_macro);
 
     SET_INL_DTOR(namuast_inltype_str, inl_dtor_str);
     SET_INL_DTOR(namuast_inltype_container, inl_dtor_container);
@@ -646,5 +682,6 @@ void initmod_namugen() {
     SET_INL_DTOR(namuast_inltype_toc, NULL);
     SET_INL_DTOR(namuast_inltype_span, inl_dtor_span);
     SET_INL_DTOR(namuast_inltype_return, NULL);
+    SET_INL_DTOR(namuast_inltype_macro, inl_dtor_macro);
 
 }

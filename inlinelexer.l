@@ -10,7 +10,8 @@ typedef struct {
 } InlineScannerExtra;
 
 static void as_span(InlineScannerExtra* extra, char* st, char* ed, enum nm_span_type type);
-static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatible_mode);
+static void as_link(InlineScannerExtra* extra, char* st, char* ed);
+static void as_macro(InlineScannerExtra *extra, char* st, char *ed);
 #define TRACK_NUM_CHARS yyextra->num_chars += yyleng
 
 %}
@@ -64,12 +65,12 @@ not_a_rbrk [^\]\n]
 }
 
 "[["(("\\"{escapable_char_in_link})|("]"|""){not_a_rbrk})*"]]" {
-    as_link(yyextra, yytext + 2, yytext + yyleng - 2, false);
+    as_link(yyextra, yytext + 2, yytext + yyleng - 2);
     TRACK_NUM_CHARS;
 }
 
 "["(("\\"{escapable_char_in_link})|{not_a_rbrk})*"]" {
-    as_link(yyextra, yytext + 1, yytext + yyleng - 1, true);
+    as_macro(yyextra, yytext + 1, yytext + yyleng - 1);
     TRACK_NUM_CHARS;
 }
 
@@ -216,7 +217,7 @@ static void as_span(InlineScannerExtra* extra, char* st, char* ed, enum nm_span_
     nm_inl_emit_span(extra->container, span_container, type);
 }
 
-static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatible_mode) {
+static void as_link(InlineScannerExtra* extra, char* st, char* ed) {
     CONSUME_SPACETAB(st, ed);
     RCONSUME_SPACETAB(st, ed);
 
@@ -232,8 +233,93 @@ static void as_link(InlineScannerExtra* extra, char* st, char* ed, bool compatib
     if (p < st)
         p = NULL;
     char* pipe_pos = p;
-    scn_parse_link_content(st, ed, pipe_pos, compatible_mode, extra->ctx, extra->container);
+    scn_parse_link_content(st, ed, pipe_pos, extra->ctx, extra->container);
 }
+
+static void as_macro(InlineScannerExtra *extra, char* st, char *ed) {
+    bndstr raw = {st, ed - st};
+    bndstr name;
+    size_t pos_args_len;
+    size_t kw_args_len;
+
+    char *testp = st;
+    UNTIL_REACHING1(testp, ed, '(') {
+        testp++;
+    }
+    name.str = st;
+    name.len = testp - st;
+
+    pos_args_len = 0;
+    kw_args_len = 0;
+
+    if (EQ(testp, ed, '(')) {
+        testp++;
+        char *lpar_st = testp;
+        UNTIL_REACHING1(testp, ed, ')') {
+            UNTIL_REACHING2(testp, ed, ',', ')') {
+                UNTIL_REACHING3(testp, ed, ',', '=', ')') {
+                    testp++;
+                }
+                if (EQ(testp, ed, '=')) {
+                    testp++;
+                    UNTIL_REACHING2(testp, ed, ',', ')') {
+                        testp++;
+                    }
+                    kw_args_len++;
+                } else {
+                    pos_args_len++;
+                }
+            }
+            if (testp >= ed) {
+                goto not_a_fn_macro;
+            } else if (EQ(testp, ed, ',')) {
+                testp++;
+            }
+        }
+
+        // now it is assured that this syntax is a function-style macro
+        bndstr pos_args[pos_args_len];
+        bndstr kw_args[kw_args_len * 2];
+        size_t pos_idx = 0, kw_idx = 0;
+
+        testp = lpar_st;
+        UNTIL_REACHING1(testp, ed, ')') {
+            UNTIL_REACHING2(testp, ed, ',', ')') {
+                char *k_st = testp;
+                UNTIL_REACHING3(testp, ed, ',', '=', ')') {
+                    testp++;
+                }
+                char *k_ed = testp;
+                CONSUME_SPACETAB(k_st, k_ed);
+                RCONSUME_SPACETAB(k_st, k_ed);
+
+                if (EQ(testp, ed, '=')) {
+                    testp++;
+                    char *v_st = testp;
+                    UNTIL_REACHING2(testp, ed, ',', ')') {
+                        testp++;
+                    }
+                    char *v_ed = testp;
+                    CONSUME_SPACETAB(v_st, v_ed);
+                    RCONSUME_SPACETAB(v_st, v_ed);
+
+                    kw_args[kw_idx++] = (bndstr){k_st, k_ed - k_st};
+                    kw_args[kw_idx++] = (bndstr){v_st, v_ed - v_st};
+                } else {
+                    pos_args[pos_idx++] = (bndstr){k_st, k_ed - k_st};
+                }
+            }
+            if (EQ(testp, ed, ',')) {
+                testp++;
+            }
+        }
+        nm_inl_emit_macro(extra->container, extra->ctx, name, true, pos_args_len, pos_args, kw_args_len, kw_args, raw);
+        return;
+    }
+not_a_fn_macro:
+    nm_inl_emit_macro(extra->container, extra->ctx, name, false, 0, NULL, 0, NULL, raw);
+}
+
 
 namuast_inl_container *scn_parse_inline(namuast_inl_container *container, char *p, char* border, char **p_out, struct namugen_ctx* ctx) { 
     yyscan_t inline_scanner;

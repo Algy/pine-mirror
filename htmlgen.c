@@ -4,7 +4,20 @@
 #include "namugen.h"
 #include "varray.h"
 
+static sds inclusion_converter(htmlgen_ctx *ctx, htmlgen_macro_record *_, struct namuast_inl_macro *macro, struct namuast_container *cur_ast, sds buf);
+static sds simple_macro_converter(htmlgen_ctx *ctx, htmlgen_simple_macro_record *record, struct namuast_inl_macro *macro, sds buf);
+
 #include "escaper.inc"
+
+static htmlgen_macro_record htmlgen_internal_macros[] = {
+    {"include", inclusion_converter},
+    {0, 0}
+};
+
+static htmlgen_simple_macro_record htmlgen_internal_simple_macros[]  = {
+    {"youtube", "<iframe class='wiki-youtube' allowfullscreen='' width='640' height='360' frameborder='0' src='//www.youtube.com/embed/{{0}}'></iframe>"},
+    {0, 0}
+};
 
 
 #define HTML_OP(x, op, ...) (namuast_html_ops[((struct namuast_base *)(x))->ast_type].op(((struct namuast_base *)(x)), __VA_ARGS__))
@@ -21,15 +34,28 @@ struct {
 } namuast_inl_html_ops[namuast_inltype_N];
 
 
-
-void htmlgen_init(htmlgen_ctx *ctx, struct namugen_doc_itfc *doc_itfc) {
+void htmlgen_init(htmlgen_ctx *ctx, const char *cur_doc_name, struct namugen_doc_itfc *doc_itfc) {
     ctx->ne_docs = NULL;
     ctx->ne_docs_count = 0;
     ctx->doc_itfc = doc_itfc;
     ctx->last_emitted_fnt = NULL;
+    ctx->cur_doc_name = sdsnew(cur_doc_name);
+    ctx->includer_info = NULL;
 }
 
 void htmlgen_remove(htmlgen_ctx *ctx) {
+    sdsfree(ctx->cur_doc_name);
+}
+
+static bool htmlgen_already_included(htmlgen_ctx *ctx, const char *doc_name) {
+    htmlgen_ctx *p;
+
+    for (p = ctx; p->includer_info; p = p->includer_info->includer_ctx) {
+        if (!strcmp(p->cur_doc_name, doc_name)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static char* align_to_str (enum nm_align_type t) {
@@ -451,6 +477,7 @@ static sds extlink_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
 static sds image_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     struct namuast_inl_image *image = (struct namuast_inl_image *)inl;
 
+    buf = sdscat(buf, "<div class='image-wrapper'>");
     buf = sdscat(buf, "<img src='");
     buf = sdscat_escape_html_attr(buf, image->src);
     buf = sdscat(buf, "'");
@@ -465,9 +492,24 @@ static sds image_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
         buf = sdscat_escape_html_attr(buf, image->height);
         buf = sdscat(buf, "'");
     }
+    buf = sdscat(buf, " class='");
     // TODO: image alignment
-
+    switch (image->align) {
+    case nm_align_left:
+        buf = sdscat(buf, "align-left");
+        break;
+    case nm_align_right:
+        buf = sdscat(buf, "align-right");
+        break;
+    case nm_align_center:
+        buf = sdscat(buf, "align-center");
+        break;
+    default:
+        break;
+    }
+    buf = sdscat(buf, "'");
     buf = sdscat(buf, ">");
+    buf = sdscat(buf, "</div>");
     return buf;
 }
 
@@ -613,6 +655,41 @@ static sds container_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf)
     return buf;
 }
 
+static sds macro_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
+    struct namuast_inl_macro *macro = (struct namuast_inl_macro *)inl;
+
+    bool done = false;
+
+    htmlgen_macro_record *r;
+    htmlgen_simple_macro_record *sr;
+    // general macro first
+    for (r = htmlgen_internal_macros; r->name; r++) {
+        if (!strcasecmp(r->name, macro->name)) {
+            buf = r->converter(ctx, r, macro, ctx->ast_being_used, buf);
+            done = true;
+            break;
+        }
+    }
+
+    if (!done) {
+        for (sr = htmlgen_internal_simple_macros; sr->name; sr++) {
+            if (!strcasecmp(sr->name, macro->name)) {
+                buf = simple_macro_converter(ctx, sr, macro, buf);
+                done = true;
+                break;
+            }
+        }
+    }
+
+    if (!done) {
+        buf = htmlgen_macro_fallback(ctx, macro, buf);
+    }
+
+    return buf;
+}
+
+
+
 /*
  * get_lname operations
  */
@@ -745,18 +822,107 @@ sds htmlgen_generate(htmlgen_ctx *ctx, namuast_container *ast_container, sds buf
     return buf;
 }
 
-sds htmlgen_generate_directly(const char *doc_name, char *buffer, size_t buf_len, struct namugen_hook_itfc* namugen_hook_itfc, struct namugen_doc_itfc *doc_itfc, sds buf) {
-    namugen_ctx namugen;
+sds htmlgen_generate_directly(const char *doc_name, struct namugen_doc_itfc *doc_itfc, sds buf, bool *success_out) {
     htmlgen_ctx htmlgen;
-    namugen_init(&namugen, doc_name, namugen_hook_itfc);
-    namugen_scan(&namugen, buffer, buf_len);
-    namuast_container* ast = namugen_obtain_ast(&namugen);
-    namugen_remove(&namugen);
 
-    htmlgen_init(&htmlgen, doc_itfc);
+    struct namuast_container* ast = doc_itfc->get_ast(doc_itfc, doc_name);
+    if (!ast) {
+        if (success_out)
+            *success_out = false;
+        return buf;
+    }
+    htmlgen_init(&htmlgen, doc_name, doc_itfc);
     buf = htmlgen_generate(&htmlgen, ast, buf);
     htmlgen_remove(&htmlgen);
     RELEASE_NAMUAST(ast);
+    if (success_out)
+        *success_out = true;
+    return buf;
+}
+
+sds htmlgen_macro_fallback(htmlgen_ctx *ctx, struct namuast_inl_macro* macro, sds buf) {
+    buf = sdscat(buf, "<span class='wiki-macro-fallback'>");
+    buf = sdscat_escape_html_content(buf, macro->raw);
+    buf = sdscat(buf, "</span>");
+    return buf;
+}
+
+static sds inclusion_converter(htmlgen_ctx *ctx, htmlgen_macro_record *_, struct namuast_inl_macro *macro, struct namuast_container *cur_ast, sds buf) {
+    if (macro->pos_args_len != 1) {
+        return htmlgen_macro_fallback(ctx, macro, buf);
+    }
+    sds doc_name = macro->pos_args[0];
+    if (!htmlgen_already_included(ctx, doc_name)) {
+        struct namuast_container *ast_to_be_included = ctx->doc_itfc->get_ast(ctx->doc_itfc, doc_name);
+        if (!ast_to_be_included) {
+            return htmlgen_macro_fallback(ctx, macro, buf);
+        }
+
+        htmlgen_ctx sub_ctx;
+        htmlgen_includer_info includer_info = {.includer_ctx = ctx};
+        htmlgen_init(&sub_ctx, doc_name, ctx->doc_itfc);
+        sub_ctx.includer_info = &includer_info;
+
+        buf = htmlgen_generate(&sub_ctx, ast_to_be_included, buf);
+
+        htmlgen_remove(&sub_ctx);
+        RELEASE_NAMUAST(ast_to_be_included);
+    }
+    return buf;
+}
+
+static int cmp_kw(const void *lhs, const void *rhs) {
+    return sdscmp(*(const sds *)lhs, *(const sds *)rhs);
+}
+
+static sds simple_macro_converter(htmlgen_ctx *ctx, htmlgen_simple_macro_record *record, struct namuast_inl_macro *macro, sds buf) {
+    const char *source = record->temp;
+    const char *border = source + strlen(source);
+
+    const char *p = source;
+    const char *flushed_p = source;
+    while (p < border) {
+        UNTIL_REACHING1(p, border, '{') {
+            p++;
+        }
+        buf = sdscatlen(buf, flushed_p, p - flushed_p);
+        flushed_p = p;
+        if (p < border)
+            p++;
+        if (EQ(p, border, '{')) {
+            p++;
+            const char* c_st = p;
+            UNTIL_REACHING1(p, border, '}') {
+                p++;
+            }
+            const char* c_ed = p;
+            CONSUME_SPACETAB(c_st, c_ed);
+            RCONSUME_SPACETAB(c_st, c_ed);
+
+            if (p < border)
+                p++;
+
+            if (EQ(p, border, '}')) {
+                char* endptr;
+                long index = strtol(c_st, &endptr, 10);
+                if (endptr == c_ed) {
+                    if (index < macro->pos_args_len) {
+                        buf = sdscat_escape_html_content(buf, macro->pos_args[index]);
+                    }
+                } else {
+                    sds key = sdsnewlen(c_st, c_ed - c_st);
+                    sds* kv = (sds *)bsearch(&key, macro->kw_args, macro->kw_args_len, sizeof(sds) * 2, cmp_kw);
+                    if (kv) {
+                        buf = sdscat_escape_html_content(buf, *(kv + 1));
+                    }
+                    sdsfree(key);
+                }
+                p++;
+                flushed_p = p;
+            }
+        }
+    }
+    buf = sdscatlen(buf, flushed_p, border - flushed_p);
     return buf;
 }
 
@@ -783,6 +949,7 @@ void initmod_htmlgen() {
     namuast_inl_html_ops[namuast_inltype_span].to_html = span_inl_to_html;
     namuast_inl_html_ops[namuast_inltype_return].to_html = return_inl_to_html;
     namuast_inl_html_ops[namuast_inltype_container].to_html = container_inl_to_html;
+    namuast_inl_html_ops[namuast_inltype_macro].to_html = macro_inl_to_html;
 
     /* get_lname operations */
     namuast_html_ops[namuast_type_container].get_lname = container_get_lname;
@@ -806,5 +973,5 @@ void initmod_htmlgen() {
     namuast_inl_html_ops[namuast_inltype_span].get_lname = span_inl_get_lname;
     namuast_inl_html_ops[namuast_inltype_return].get_lname = noop_inl_get_lname;
     namuast_inl_html_ops[namuast_inltype_container].get_lname = container_inl_get_lname;
+    namuast_inl_html_ops[namuast_inltype_macro].get_lname = noop_inl_get_lname;
 }
-
