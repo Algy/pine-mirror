@@ -656,7 +656,7 @@ static bool strip_section(char *st, char *ed, char **link_out, char **section_ou
     }
     return false;
 }
-static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mode, namuast_inl_container *alias, struct namuast_inl_container* container, struct namugen_ctx *ctx) {
+static void emit_internal_link(char *link_st, char *link_ed, namuast_inl_container *alias, struct namuast_inl_container* container, struct namugen_ctx *ctx) {
     char *link, *section;
     if (!strip_section(link_st, link_ed, &link, &section)) {
         link = unescape_link(dup_str(link_st, link_ed));
@@ -676,13 +676,13 @@ static void emit_internal_link(char *link_st, char *link_ed, bool compatible_mod
     } else if (!strcmp(link, "../")) {
         nm_inl_emit_upper_link(container, ctx, alias, bnd_section);
     } else {
-        nm_inl_emit_link(container, ctx, bnd_link, compatible_mode, alias, bnd_section);
+        nm_inl_emit_link(container, ctx, bnd_link, alias, bnd_section);
     }
     free(link);
     free(section);
 }
 
-void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatible_mode, struct namugen_ctx* ctx, struct namuast_inl_container* container) {
+void scn_parse_link_content(char *p, char* border, char* pipe_pos, struct namugen_ctx* ctx, struct namuast_inl_container* container) {
     char *dummy;
     namuast_inl_container* alias_subinl = NULL;
     if (pipe_pos) {
@@ -735,7 +735,7 @@ void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatib
             alias_subinl = scn_parse_inline(make_inl_container(), testp, lpipe_pos, &dummy, ctx);
         }
         if (use_wiki || use_dquote) {
-            emit_internal_link(link_st, link_ed, compatible_mode, alias_subinl, container, ctx);
+            emit_internal_link(link_st, link_ed, alias_subinl, container, ctx);
         } else {
             bndstr url = {url_st, url_ed - url_st};
             nm_inl_emit_external_link(container, url, alias_subinl);
@@ -743,7 +743,7 @@ void scn_parse_link_content(char *p, char* border, char* pipe_pos, bool compatib
         return;
     }
 prefix_failure:
-    emit_internal_link(p, pipe_pos? pipe_pos : border, compatible_mode, alias_subinl, container, ctx);
+    emit_internal_link(p, pipe_pos? pipe_pos : border, alias_subinl, container, ctx);
 }
 
 static inline bool parse_list_header (char *p, char *border, char **content_st_out, int *list_type_out, int* indent_level_out) {
@@ -894,14 +894,20 @@ static inline char* namu_scan_main(char *p, char* border, struct namugen_ctx* ct
     case '>':
         // quotation
         {
+            struct namuast_inl_container *container = make_inl_container();
             char *testp = p;
-            testp++;
-            UNTIL_NOT_REACHING1(testp, border, '>') {
-                testp++;
+            while (testp < border && *testp == '>') {
+                UNTIL_NOT_REACHING1(testp, border, '>') {
+                    testp++;
+                }
+                CONSUME_SPACETAB(testp, border);
+                scn_parse_inline(container, testp, border, &testp, ctx);
+                if (EQ(testp, border, '\n')) {
+                    inl_container_add_return(container, ctx);
+                    testp++;
+                }
             }
-            CONSUME_SPACETAB(testp, border);
-            nm_emit_quotation(ctx, scn_parse_inline(make_inl_container(), testp, border, &testp, ctx));
-            CONSUME_IF_ENDL(testp, border);
+            nm_emit_quotation(ctx, container);
             return testp;
         }
         break;
