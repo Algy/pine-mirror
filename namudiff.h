@@ -72,7 +72,7 @@ typedef struct {
 } RevisionInfo;
 
 typedef struct {
-    RevisionInfo* info;
+    int revision_id;
     int32_t *uni_buffer;
     size_t uni_len;
     char *buffer;
@@ -83,7 +83,7 @@ typedef struct DiffNode {
     int refcount;
     enum diff_node_type type;
 
-    RevisionInfo *owner;
+    int owner_revision_id;
 
     const Revision *source_revision;
     size_t source_offset;
@@ -128,7 +128,7 @@ void RevisionInfo_obtain(RevisionInfo *ptr);
 void RevisionInfo_release(RevisionInfo *ptr);
 
 // it steals buffer
-Revision* Revision_new(RevisionInfo *revinfo, char *buffer, size_t buffer_size);
+Revision* Revision_new(int revision_id, char *buffer, size_t buffer_size);
 
 void Revision_free(Revision *rev);
 
@@ -136,7 +136,7 @@ DiffNodeConnection *DiffNodeConnection_new(enum diff_node_type node_type, int di
 DiffMatch* DiffNodeConnection_add(DiffNodeConnection *conn, size_t del_off, size_t ins_off, size_t len, DiffNodeConnection *subconn);
 void DiffNodeConnection_free(DiffNodeConnection *conn);
 
-DiffNode* DiffNode_new(enum diff_node_type type, RevisionInfo *owner, const Revision *source_revision, size_t source_offset, size_t source_len);
+DiffNode* DiffNode_new(enum diff_node_type type, int owner_revision_id, const Revision *source_revision, size_t source_offset, size_t source_len);
 DiffNode* DiffNode_shallow_clone(const DiffNode* src, bool copy_children);
 void DiffNode_add_child(DiffNode *parent, DiffNode *node);
 DiffNode* DiffNode_parse(const Revision *rev);
