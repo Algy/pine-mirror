@@ -468,8 +468,9 @@ static char* align_to_str (enum nm_align_type t) {
     case nm_align_right:
         return "right";
     case nm_align_center:
-    case nm_valign_center:
         return "center";
+    case nm_valign_middle:
+        return "middle";
     case nm_valign_top:
         return "top";
     case nm_valign_bottom:
@@ -603,11 +604,9 @@ static inline sds add_html_attr(sds s, const char* key, char* value) {
         s = sdscat(s, " ");
         s = sdscat(s, key);
         if (*value) {
-            sds esc_val = escape_html_attr(value);
             s = sdscat(s, "='");
-            s = sdscat(s, esc_val);
+            s = sdscat_escape_html_attr(s, value);
             s = sdscat(s, "'");
-            sdsfree(esc_val);
         }
     }
     return s;
@@ -645,7 +644,7 @@ static sds table_to_html(namuast_base *base, htmlgen_ctx *ctx, sds buf) {
         tbl_class = "wiki-table table-center";
         break;
     default:
-        tbl_class = "";
+        tbl_class = "wiki-table";
         break;
     }
 

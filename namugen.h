@@ -44,12 +44,13 @@ void initmod_namugen();
         } \
         if (__end__) break; \
     }
+
 #define IS_WHITESPACE(c) ((c) == ' ' || (c) == '\n' || (c) == '\t')
 #define EQ(p, border, c1) (!MET_EOF(p, border) && (*(p) == (c1)))
 #define SAFE_INC(p, border)  if (!MET_EOF(p, border)) { p++; }
 #define EQSTR(p, border, str) (!strncmp((p), (str), (border) - (p)))
-#define PREFIXSTR(p, border, prefix) (!strncmp((p), (prefix), strlen(prefix)))
-#define CASEPREFIXSTR(p, border, prefix) (!strncasecmp((p), (prefix), strlen(prefix)))
+#define PREFIXSTR(p, border, prefix) (((border) - (p)) >= strlen(prefix) && !strncmp((p), (prefix), strlen(prefix)))
+#define CASEPREFIXSTR(p, border, prefix) (((border) - (p)) >= strlen(prefix) && !strncasecmp((p), (prefix), strlen(prefix)))
 
 typedef struct {
     char *str;
@@ -74,7 +75,7 @@ enum nm_align_type {
     nm_align_right,
     nm_valign_none,
     nm_valign_top,
-    nm_valign_center,
+    nm_valign_middle,
     nm_valign_bottom
 };
 
@@ -206,10 +207,10 @@ struct namuast_table {
     size_t max_col_count;
     int align;
     struct namuast_inl_container* caption;
-    char *bg_webcolor;
-    char* width; 
-    char* height; 
-    char* border_webcolor;
+    sds bg_webcolor;
+    sds width; 
+    sds height; 
+    sds border_webcolor;
     size_t row_count;
     size_t row_size;
     struct namuast_table_row *rows; // [row][col]
@@ -357,16 +358,16 @@ struct namuast_table_cell {
     struct namuast_inl_container* content;
     int rowspan;
     int colspan;
-    int align;
-    int valign;
+    enum nm_align_type align;
+    enum nm_align_type valign;
 
-    char *bg_webcolor;
-    char* width; 
-    char* height; 
+    sds bg_webcolor;
+    sds width; 
+    sds height; 
 };
 
 struct namuast_table_row {
-    char *bg_webcolor;
+    sds bg_webcolor;
 
     size_t col_size;
     size_t col_count;

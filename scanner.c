@@ -283,18 +283,20 @@ void _namuast_dtor_table(struct namuast_base *base) {
             if (cell->content) {
                 RELEASE_NAMUAST(cell->content);
             }
-            if (cell->bg_webcolor) free(cell->bg_webcolor);
-            if (cell->width) free(cell->width);
-            if (cell->height) free(cell->height);
+            if (cell->bg_webcolor) sdsfree(cell->bg_webcolor);
+            if (cell->width) sdsfree(cell->width);
+            if (cell->height) sdsfree(cell->height);
         }
-        if (row->bg_webcolor) free(row->bg_webcolor);
+        if (row->bg_webcolor) sdsfree(row->bg_webcolor);
         free(row->cols);
     }
-    if (table->border_webcolor) free(table->border_webcolor);
-    if (table->width) free(table->width);
-    if (table->height) free(table->height);
-    if (table->bg_webcolor) free(table->bg_webcolor);
-    if (table->caption) RELEASE_NAMUAST(table->caption);
+    if (table->border_webcolor) sdsfree(table->border_webcolor);
+    if (table->width) sdsfree(table->width);
+    if (table->height) sdsfree(table->height);
+    if (table->bg_webcolor) sdsfree(table->bg_webcolor);
+    if (table->caption) {
+        RELEASE_NAMUAST(table->caption);
+    }
     free(table->rows);
 }
 
@@ -379,31 +381,125 @@ static void remove_celltag(celltag *tag) {
 }
 */
 
-static inline void table_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, bool is_first, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
-    /*
+static inline void table_use_cell_ctrl(char *ctrl_st, char *ctrl_ed, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
     CONSUME_WHITESPACE(ctrl_st, ctrl_ed);
-    char *sp = ctrl_st;
-    char *testp = ctrl_st;
-    char* label_st, *label_ed;
+    RCONSUME_WHITESPACE(ctrl_st, ctrl_ed);
 
-    bool first
+    if (EQSTR(ctrl_st, ctrl_ed, "(")) {
+        cell->align = nm_align_left;
+    } else if (EQSTR(ctrl_st, ctrl_ed, ":")) {
+        cell->align = nm_align_center;
+    } else if (EQSTR(ctrl_st, ctrl_ed, ")")) {
+        cell->align = nm_align_right;
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "-")) {
+        ctrl_st++;
 
-    if (is_first && !strncmp(ctrl_st, "table", ctrl_ed - ctrl_st)) {
+        char *endptr;
+        long n = strtol(ctrl_st, &endptr, 10);
+        if (endptr == ctrl_ed) {
+            cell->colspan = (int)n;
+        }
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "^|")) {
+        cell->valign = nm_valign_top;
+
+        ctrl_st += 2;
+
+        char *endptr;
+        long n = strtol(ctrl_st, &endptr, 10);
+        if (endptr == ctrl_ed) {
+            cell->rowspan = (int)n;
+        }
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "|")) {
+        cell->valign = nm_valign_middle;
+
+        ctrl_st++;
+
+        char *endptr;
+        long n = strtol(ctrl_st, &endptr, 10);
+        if (endptr == ctrl_ed) {
+            cell->rowspan = (int)n;
+        }
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "v|")) {
+        cell->valign = nm_valign_bottom;
+
+        ctrl_st += 2;
+
+        char *endptr;
+        long n = strtol(ctrl_st, &endptr, 10);
+        if (endptr == ctrl_ed) {
+            cell->rowspan = (int)n;
+        }
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "bgcolor=")) {
+        ctrl_st += 8; // strlen("bgcolor=")
+
+        if (cell->bg_webcolor)
+            sdsfree(cell->bg_webcolor);
+        cell->bg_webcolor = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "rowbgcolor=")) {
+        ctrl_st += 11; // strlen("rowbgcolor=")
+
+        if (row->bg_webcolor)
+            sdsfree(row->bg_webcolor);
+        row->bg_webcolor = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "width=")) {
+        ctrl_st += 6; // strlen("width=")
+
+        if (cell->width)
+            sdsfree(cell->width);
+        cell->width = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "height=")) {
+        ctrl_st += 7; // strlen("height=")
+
+        if (cell->height)
+            sdsfree(cell->height);
+        cell->height = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+    } else if (PREFIXSTR(ctrl_st, ctrl_ed, "table")) {
+        ctrl_st += 5; // strlen("table")
         CONSUME_WHITESPACE(ctrl_st, ctrl_ed);
-    }
-   
+        if (PREFIXSTR(ctrl_st, ctrl_ed, "align=")) {
+            ctrl_st += 6; // strlen("align=")
+            if (EQSTR(ctrl_st, ctrl_ed, "left")) {
+                table->align = nm_align_left;
+            } else if (EQSTR(ctrl_st, ctrl_ed, "center")) {
+                table->align = nm_align_center;
+            } else if (EQSTR(ctrl_st, ctrl_ed, "right")) {
+                table->align = nm_align_right;
+            }
+        } else if (PREFIXSTR(ctrl_st, ctrl_ed, "bgcolor=")) {
+            ctrl_st += 8; // strlen("bgcolor=")
 
-    if (is_first) {
-        char saved_c = ctrl;
-        sscanf(ctrl_st, );
+            if (table->bg_webcolor)
+                sdsfree(table->bg_webcolor);
+            table->bg_webcolor = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+        } else if (PREFIXSTR(ctrl_st, ctrl_ed, "bordercolor=")) {
+            ctrl_st += 12; // strlen("bordercolor=")
+
+            if (table->border_webcolor)
+                sdsfree(table->border_webcolor);
+            table->border_webcolor = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+        } else if (PREFIXSTR(ctrl_st, ctrl_ed, "width=")) {
+            ctrl_st += 6; // strlen("width=")
+
+            if (table->width)
+                sdsfree(table->width);
+            table->width = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+        } else if (PREFIXSTR(ctrl_st, ctrl_ed, "height=")) {
+            ctrl_st += 7; // strlen("height=")
+
+            if (table->height)
+                sdsfree(table->height);
+            table->width = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
+        }
+    } else {
+        // the default configuration is setting bgcolor of cell
+        if (cell->bg_webcolor)
+            sdsfree(cell->bg_webcolor);
+        cell->bg_webcolor = sdsnewlen(ctrl_st, ctrl_ed - ctrl_st);
     }
-    */
-    // TODO
 }
 
-// Hacky
-static inline bool parse_table_cell(char *p, char *border, char **p_out, int *colspan_out, char** cell_ctrl_start_p_out, char** cell_ctrl_end_p_out, char** content_start_p_out, char** content_end_p_out) {
-    // (||)* \s* <(.|\n)*> \s* CONTENT \s* ||
+static inline bool parse_table_cell(struct namugen_ctx *ctx, char *p, char *border, char **p_out, struct namuast_table *table, struct namuast_table_row *row, struct namuast_table_cell *cell) {
+    // (||)* \s* (<(.|\n)*>)* \s* CONTENT \s* ||
     char *testp = p;
     int dup_pipes = 0;
     UNTIL_NOT_REACHING1(testp, border, '|') {
@@ -415,24 +511,23 @@ static inline bool parse_table_cell(char *p, char *border, char **p_out, int *co
         dup_pipes--;
     }
     int colspan = dup_pipes / 2 + 1;
+    cell->colspan = colspan;
 
-    CONSUME_WHITESPACE(testp, border);
 
     /* <(.|\n)*> */
-    char *cell_ctrl_start_p = NULL, *cell_ctrl_end_p = NULL;
-    if (EQ(testp, border, '<')) {
+    CONSUME_WHITESPACE(testp, border);
+    while (EQ(testp, border, '<')) {
         testp++; // consume '<'
-        char* _tmp_st_p = testp;
+        char* ctrl_st = testp;
         UNTIL_REACHING1(testp, border, '>') {
             testp++;
         }
         if (!MET_EOF(testp, border)) {
-            cell_ctrl_start_p = _tmp_st_p;
-            cell_ctrl_end_p = testp;
+            table_use_cell_ctrl(ctrl_st, testp, table, row, cell);
             testp++; // consume '>'
+            CONSUME_WHITESPACE(testp, border);
         }
     }
-    CONSUME_WHITESPACE(testp, border);
 
     char *content_start_p, *content_end_p;
 
@@ -449,12 +544,8 @@ static inline bool parse_table_cell(char *p, char *border, char **p_out, int *co
         testp++;
     }
     RCONSUME_SPACETAB(content_start_p, content_end_p);
-    *colspan_out = colspan;
+    cell->content = parse_multiline(content_start_p, content_end_p, ctx);
     *p_out = testp;
-    *cell_ctrl_start_p_out = cell_ctrl_start_p;
-    *cell_ctrl_end_p_out = cell_ctrl_end_p;
-    *content_start_p_out = content_start_p;
-    *content_end_p_out = content_end_p;
     return true;
 }
 
@@ -487,23 +578,11 @@ static struct namuast_table* parse_table(char* p, char* border, char **p_out, st
 
     while (1) {
         struct namuast_table_row* row = namuast_add_table_row(table);
-        bool is_first = true;
         do {
             struct namuast_table_cell* cell = namuast_add_table_cell(table, row);
-            int colspan;
-            char* cell_ctrl_st, *cell_ctrl_ed;
-            char* cell_content_st, *cell_content_ed;
-            if (!parse_table_cell(testp, border, &testp, &colspan, &cell_ctrl_st, &cell_ctrl_ed, &cell_content_st, &cell_content_ed)) {
+            if (!parse_table_cell(ctx, testp, border, &testp, table, row, cell)) {
                 goto failure;
             }
-            if (is_first)
-                is_first = false;
-
-            // configure cell
-            cell->colspan = colspan;
-            cell->content = parse_multiline(cell_content_st, cell_content_ed, ctx);
-            table_use_cell_ctrl(cell_ctrl_st, cell_ctrl_ed, is_first, table, row, cell);
-
             CONSUME_SPACETAB(testp, border);
         } while (!MET_EOF(testp, border) && *testp != '\n');
         SAFE_INC(testp, border); // consume '\n'
