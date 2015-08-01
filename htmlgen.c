@@ -856,6 +856,7 @@ static sds link_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     buf = sdscat(buf, "' data-internal-link-section='");
     if (link->section)
         buf = sdscat_escape_html_attr(buf, link->section);
+    buf = sdscatprintf(buf, "' data-internal-link-exists='%d", (int)(!doesnt_exist));
     buf = sdscat(buf, "'>");
 
     sdsfree(href);
