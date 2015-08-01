@@ -2,8 +2,18 @@ all: bootest
 inlinelexer.yy.c: inlinelexer.l
 	lex -d --ecs --align --outfile=inlinelexer.yy.c inlinelexer.l 
 
-bootest: scanner.c bootest.c namugen.c htmlgen.c sds/sds.c list.c inlinelexer.yy.c htmlgen.c varray.c
-	cc -O3 -Wno-extended-offsetof -DVERBOSE -pedantic -g scanner.c inlinelexer.yy.c list.c bootest.c namugen.c sds/sds.c htmlgen.c varray.c -o test.out
+tidy-html5/Makefile: tidy-html5/CMakeLists.txt
+	cd tidy-html5;\
+	cmake CMakeLists.txt;\
+	cd ..
+
+tidy-html5/libtidy5s.a: tidy-html5/Makefile
+	cd tidy-html5;\
+	make;\
+	cd ..
+
+bootest: scanner.c bootest.c namugen.c htmlgen.c sds/sds.c list.c inlinelexer.yy.c htmlgen.c varray.c tidy-html5/libtidy5s.a
+	cc -O3 -Wno-extended-offsetof -DVERBOSE -pedantic -g scanner.c inlinelexer.yy.c list.c bootest.c namugen.c sds/sds.c htmlgen.c varray.c tidy-html5/libtidy5s.a -o test.out
 
 difftest: parson/parson.c sds/sds.c diff.c namudiff.c
 	cc -D SIMPLE_NAMUDIFF_PROGRAM -Wall -g -o difftest parson/parson.c sds/sds.c varray.c diff.c namudiff.c 

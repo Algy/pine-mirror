@@ -571,7 +571,6 @@ bool scn_parse_block(char *p, char *border, char **p_out, struct nm_block_emitte
                 char *color_ed = testp;
                 if (EQSTR(color_st, color_ed, "!html")) {
                     if (ops->emit_html) {
-                        testp += 5;
                         CONSUME_SPACETAB(testp, content_end_p);
                         RCONSUME_SPACETAB(testp, content_end_p);
                         bndstr html = {testp, content_end_p - testp};

@@ -4,6 +4,405 @@
 #include "namugen.h"
 #include "varray.h"
 
+/*
+ * HTML Sanitizer
+ */
+#include "tidy-html5/include/tidy.h"
+#include "tidy-html5/include/buffio.h"
+
+const char *allowed_tags[] = {
+    "p", 
+    "pre", 
+    "blockquote", 
+    "ul", 
+    "div", 
+    "a", 
+    "em", 
+    "strong", 
+    "s", 
+    "sub", 
+    "i", 
+    "b", 
+    "u", 
+    "ruby", 
+    "rt", 
+    "rp", 
+    "span", 
+    "br", 
+    "ins", 
+    "del", 
+    "img", 
+    "iframe", 
+    "embed", 
+    "object", 
+    "param", 
+    "video",
+    0
+};
+
+const char *allowed_attributes[] = {
+    "href",
+    "src",
+    "style",
+    "class",
+    "width",
+    "height", 
+    "alt", 
+    "align",
+    0
+};
+
+
+const char *allowed_link_schema [] = {
+    "http://",
+    "https://",
+    "//", 
+    "/",
+    0
+};
+
+static const char* iter_entity(const char *p, const char* end, int32_t *cp_out) {
+    if (p < end) {
+        if (p + 1 < end && *p == '&' && *(p + 1) == '#') {
+            const char *testp = p + 2;
+            int base = 10;
+            if (testp < end && *testp == 'x') {
+                testp++;
+                base = 16;
+            }
+            int32_t codepoint = 0;
+            bool entered = false;
+            while (testp < end) {
+                char cn = *testp;
+                if ('0' <= cn && cn <= '9') {
+                    codepoint = codepoint * base + (cn - '0');
+                    entered = true;
+                } else if (base == 16) {
+                    if (cn >= 'a' && cn <= 'f') {
+                        codepoint = codepoint * base + (cn - 'a') + 10;
+                        entered = true;
+                    } else if (cn >= 'A' && cn <= 'F') {
+                        codepoint = codepoint * base + (cn - 'A') + 10;
+                        entered = true;
+                    } else
+                        break;
+                } else
+                    break;
+                testp++;
+            }
+            if (!entered)
+                goto as_char;
+            if (testp < end && *testp == ';')
+                testp++;
+            p = testp;
+            *cp_out = codepoint;
+            return testp;
+        }
+as_char:
+        *cp_out = (int32_t)*p;
+        return p + 1;
+    } else {
+        *cp_out = -1;
+        return end;
+    }
+}
+
+static size_t filter_html_entities(char* src, size_t len) {
+    char* acc = src;
+    const char* p = src;
+    const char* end = src + len;
+    while (p < end) {
+        switch (*p) {
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+        case 25:
+        case 26:
+        case 27:
+        case 28:
+        case 29:
+        case 30:
+        case 31:
+            p++;
+            break;
+        default:
+            {
+                int32_t cp;
+                const char* next_p = iter_entity(p, end, &cp);
+                if (cp >= ' ' && cp <= '~') {
+                    *acc++ = (char)cp;
+                    p = next_p;
+                } else {
+                    *acc++ = *p++;
+                }
+            }
+            break;
+        }
+    }
+    *acc = 0;
+    return acc - src;
+}
+
+static bool acceptable_src_href(const char* src, size_t len) {
+    sds buf = sdsnewlen(src, len);
+    filter_html_entities(buf, len);
+    sdsupdatelen(buf);
+    len = sdslen(buf);
+
+    const char* p = buf;
+    const char *end = buf + len;
+
+    while (p < end) {
+        int32_t cp;
+        const char* next_p = iter_entity(p, end, &cp);
+        if (cp <= ' ') {
+            p = next_p;
+        } else
+            break;
+    }
+    const char **schema;
+    bool success = false;
+    for (schema = allowed_link_schema; *schema; schema++) {
+        if (!strncasecmp(*schema, p, strlen(*schema))) {
+            success = true;
+            break;
+        }
+    }
+    sdsfree(buf);
+    return success;
+}
+
+static bool acceptable_style(const char* style, size_t len) {
+    sds buf = sdsnewlen(style, len);
+    filter_html_entities(buf, len);
+    sdsupdatelen(buf);
+    len = sdslen(buf);
+
+    char* p = buf;
+    char *end = buf + len;
+
+    while (p < end) {
+        if (!strncasecmp(p, "url", 3)) {
+            p += 3;
+            while (p < end && *p == ' ') p++;
+            if (p < end && *p == '(') {
+                p++;
+                if (!acceptable_src_href(p, len))
+                    goto error;
+                while (p < end && *p != ')')
+                    p++;
+                if (p < end) p++;
+            }
+        } else if (!strncasecmp(p, "expression", 10)) {
+            p += 10;
+            while (p < end && *p == ' ') p++;
+            if (p < end && *p == '(') {
+                goto error;
+            }
+        } else
+            p++;
+    }
+    sdsfree(buf);
+    return true;
+error:
+    sdsfree(buf);
+    return false;
+}
+
+static void filter_html_buffer(char *p, size_t len) {
+    char *acc = p;
+    char *end = p + len;
+    while (p < end) {
+        while (p < end && *p != '<') {
+            *acc++ = *p++;
+        }
+        // acc: before <
+        if (p >= end) 
+            break;
+        char *brace_st = p;
+        p++; // consume '<'
+
+        if (*p == '/') {
+            p++;
+        }
+        char *tag_st = p;
+        while (p < end && *p != ' ' && *p != '>') {
+            p++;
+        }
+        char *tag_ed = p;
+
+        bool valid_tag = false;
+        const char** ptag;
+        for (ptag = allowed_tags; *ptag; ptag++) {
+            if (!strncasecmp(*ptag, tag_st, tag_ed - tag_st)) {
+                valid_tag = true;
+                break;
+            }
+        }
+        if (!valid_tag) {
+            while (p < end && *p != '>')
+                p++;
+            if (p < end)
+                p++;
+        } else {
+            const char *after_tag_name = p;
+            const char *tmp;
+            for (tmp = brace_st; tmp < after_tag_name; tmp++)
+                *acc++ = *tmp;
+            // acc: after tag name
+
+            while (p < end) {
+                while (p < end && (*p == ' ' || *p == '\n')) {
+                    p++;
+                }
+                if (p < end && *p == '>') {
+                    p++;
+                    break;
+                }
+                char *attr_name_st = p;
+                while (p < end && *p != '=' && *p != ' ' && *p != '>')
+                    p++;
+                char *attr_name_ed = p;
+                char *attr_value_st = NULL, *attr_value_ed;
+                if (p < end && *p == '=') {
+                    p++;
+                    while (p < end && (*p == ' ' || *p == '\n')) {
+                        p++;
+                    }
+
+                    if (*p == '\'') {
+                        p++;
+                        attr_value_st = p;
+                        while (p < end && *p != '\'')
+                            p++;
+                        attr_value_ed = p;
+                        if (p < end)
+                            p++;
+                    } else if (*p == '"') {
+                        p++;
+                        attr_value_st = p;
+                        while (p < end && *p != '"')
+                            p++;
+                        attr_value_ed = p;
+                        if (p < end)
+                            p++;
+                    }
+                }
+                char *attr_end = p;
+
+                const char** aattr;
+                bool valid_attr = false;
+                for (aattr = allowed_attributes; *aattr; aattr++) {
+                    if (!strncasecmp(attr_name_st, *aattr, attr_name_ed - attr_name_st)) {
+                        valid_attr = true;
+                        break;
+                    }
+                }
+
+                if (valid_attr && attr_value_st) {
+                    if (!strncasecmp(attr_name_st, "src", attr_name_ed - attr_name_st) || !strncasecmp(attr_name_st, "href", attr_name_ed - attr_name_st)) {
+                        if (!acceptable_src_href(attr_value_st, attr_value_ed - attr_value_st)) {
+                            valid_attr = false;
+                        }
+                    } else if (!strncasecmp(attr_name_st, "style", attr_name_ed - attr_name_st)) {
+                        if (!acceptable_style(attr_value_st, attr_value_ed - attr_value_st)) {
+                            valid_attr = false;
+                        }
+                    }
+                }
+                if (valid_attr) {
+                    *acc++ = ' ';
+                    for (tmp = attr_name_st; tmp < attr_end; tmp++) {
+                        *acc++ = *tmp;
+                    }
+                }
+            }
+            *acc++ = '>';
+        }
+    }
+    *acc = 0;
+}
+
+static sds sdscat_sanitize_src_href(sds buf, const sds src) {
+    if (acceptable_src_href(src, sdslen(src))) {
+        buf = sdscatsds(buf, src);
+    }
+    return buf;
+}
+
+static sds sdscat_sanitize_style(sds buf, const sds style) {
+    if (acceptable_style(style, sdslen(style))) {
+        buf = sdscatsds(buf, style);
+    }
+    return buf;
+}
+
+static sds sdscat_sanitize_html(sds buf, const sds src) {
+    sds src_copy = sdsdup(src);
+    filter_html_entities(src_copy, sdslen(src_copy));
+    sdsupdatelen(src_copy);
+
+    TidyBuffer output, errbuf;
+    tidyBufInit(&output);
+    tidyBufInit(&errbuf);
+
+    TidyDoc tdoc = tidyCreate();
+    tidySetErrorBuffer(tdoc, &errbuf);
+    
+    tidyOptSetValue(tdoc, TidyBodyOnly, "yes");
+    tidyOptSetValue(tdoc, TidyInCharEncoding, "utf8");
+    tidyOptSetValue(tdoc, TidyOutCharEncoding, "utf8");
+    tidyOptSetValue(tdoc, TidyLiteralAttribs, "no");
+    tidyOptSetValue(tdoc, TidyDropEmptyParas, "no");
+    tidyOptSetValue(tdoc, TidyDropEmptyElems, "no");
+    tidyParseString(tdoc, src_copy);
+    tidyCleanAndRepair(tdoc);
+    tidySaveBuffer(tdoc, &output);
+
+    sds p;
+    if (output.size > 0) {
+        p = sdsnew((char *)output.bp);
+    } else {
+        p = sdsempty();
+    }
+    sdsfree(src_copy);
+    tidyBufFree(&output);
+    tidyBufFree(&errbuf);
+    tidyRelease(tdoc);
+
+    filter_html_buffer(p, sdslen(p));
+    sdsupdatelen(p);
+    buf = sdscatsds(buf, p);
+    sdsfree(p);
+    return buf;
+}
+
+
+/*
+ * Macro system
+ */
+
 static sds inclusion_converter(htmlgen_ctx *ctx, htmlgen_macro_record *_, struct namuast_inl_macro *macro, struct namuast_container *cur_ast, sds buf);
 static sds simple_macro_converter(htmlgen_ctx *ctx, htmlgen_simple_macro_record *record, struct namuast_inl_macro *macro, sds buf);
 
@@ -16,6 +415,7 @@ static htmlgen_macro_record htmlgen_internal_macros[] = {
 
 static htmlgen_simple_macro_record htmlgen_internal_simple_macros[]  = {
     {"youtube", "<iframe class='wiki-youtube' allowfullscreen='' width='640' height='360' frameborder='0' src='//www.youtube.com/embed/{{0}}'></iframe>"},
+    {"anchor", "<a id='{{0}}'></a>"},
     {0, 0}
 };
 
@@ -175,7 +575,7 @@ static sds block_to_html(namuast_base *base, htmlgen_ctx *ctx, sds buf) {
     struct namuast_block *block = (struct namuast_block *)base;
     switch (block->block_type) {
     case block_type_html:
-        // TODO: sanitizer required
+        buf = sdscat_sanitize_html(buf, block->data.html);
         break;
     case block_type_raw:
         {
@@ -261,7 +661,7 @@ static sds table_to_html(namuast_base *base, htmlgen_ctx *ctx, sds buf) {
         buf = sdscat(buf, "<table class='");
             buf = sdscat(buf, tbl_class);
         buf = sdscat(buf, "' style='");
-            buf = sdscatsds(buf, tbl_style);
+            buf = sdscat_sanitize_style(buf, tbl_style);
         buf = sdscat(buf, "' ");
             buf = sdscatsds(buf, tbl_attr);
         buf = sdscat(buf, ">");
@@ -283,11 +683,14 @@ static sds table_to_html(namuast_base *base, htmlgen_ctx *ctx, sds buf) {
         sds row_head = sdsnew("<tr");
 
         if (row->bg_webcolor) {
-            row_head = sdscat(row_head, " style='background-color:"); 
-            sds val = escape_html_attr(row->bg_webcolor);
-            row_head = sdscatsds(row_head, val); 
+            row_head = sdscat(row_head, " style='");
+
+            sds row_style = sdsnew("background-color: "); 
+            row_style = sdscat_escape_html_attr(row_style, row->bg_webcolor);
+
+            row_head = sdscat_sanitize_style(row_head, row_style); 
             row_head = sdscat(row_head, "'"); 
-            sdsfree(val);
+            sdsfree(row_style);
         }
         row_head = sdscat(row_head, ">");
         buf = sdscatsds(buf, row_head);
@@ -319,7 +722,7 @@ static sds table_to_html(namuast_base *base, htmlgen_ctx *ctx, sds buf) {
             cell_style = add_html_style(cell_style, "background-color", cell->bg_webcolor);
 
             buf = sdscat(buf, "<td style='");
-                buf = sdscatsds(buf, cell_style);
+                buf = sdscat_sanitize_style(buf, cell_style);
                 buf = sdscat(buf, "' ");
                 buf = sdscatsds(buf, cell_attr);
             buf = sdscat(buf, ">");
@@ -436,7 +839,9 @@ static sds link_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     assert (link->_base.inl_type == namuast_inltype_link);
     assert (link->name != NULL);
     bool doesnt_exist = doc_doesnt_exist(ctx, link->name);
-    sds href = ctx->doc_itfc->doc_href(ctx->doc_itfc, link->name);
+
+    sds raw_href = ctx->doc_itfc->doc_href(ctx->doc_itfc, link->name);
+    sds href = sdscat_sanitize_src_href(sdsempty(), raw_href);
     buf = sdscat(buf, "<a class='internal-link ");
     if (doesnt_exist)
         buf = sdscat(buf, " not-exist");
@@ -446,8 +851,16 @@ static sds link_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
         buf = sdscat(buf, "#s-");
         buf = sdscatsds(buf, link->section);
     }
+
+    buf = sdscat(buf, "' data-internal-link-ref='");
+    buf = sdscat_escape_html_attr(buf, link->name);
+    buf = sdscat(buf, "' data-internal-link-section='");
+    if (link->section)
+        buf = sdscat_escape_html_attr(buf, link->section);
     buf = sdscat(buf, "'>");
+
     sdsfree(href);
+    sdsfree(raw_href);
 
     if (link->alias) {
         buf = INL_HTML_OP(link->alias, to_html, ctx, buf);
@@ -462,8 +875,11 @@ static sds extlink_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
     struct namuast_inl_extlink *extlink = (struct namuast_inl_extlink *)inl;
 
     buf = sdscatprintf(buf, "<a href='");
-    buf = sdscat_escape_html_attr(buf, extlink->href);
-    buf = sdscatprintf(buf, "' class='external-link'>");
+    sds sanitized_link = sdscat_sanitize_src_href(sdsempty(), extlink->href);
+    buf = sdscat_escape_html_attr(buf, sanitized_link);
+    buf = sdscat(buf, "' class='external-link'>");
+
+    sdsfree(sanitized_link);
     
     if (extlink->alias) {
         buf = INL_HTML_OP(extlink->alias, to_html, ctx, buf);
@@ -479,8 +895,10 @@ static sds image_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
 
     buf = sdscat(buf, "<div class='image-wrapper'>");
     buf = sdscat(buf, "<img src='");
-    buf = sdscat_escape_html_attr(buf, image->src);
+    sds sanitized_link = sdscat_sanitize_src_href(sdsempty(), image->src);
+    buf = sdscat_escape_html_attr(buf, sanitized_link);
     buf = sdscat(buf, "'");
+    sdsfree(sanitized_link);
     if (image->width) {
         buf = sdscat(buf, " width='");
         buf = sdscat_escape_html_attr(buf, image->width);
@@ -493,7 +911,6 @@ static sds image_inl_to_html(namuast_inline *inl, htmlgen_ctx *ctx, sds buf) {
         buf = sdscat(buf, "'");
     }
     buf = sdscat(buf, " class='");
-    // TODO: image alignment
     switch (image->align) {
     case nm_align_left:
         buf = sdscat(buf, "align-left");
